@@ -5,6 +5,7 @@ import {
   type CardEntryBody,
   type CreateTransactionBody,
   distribute,
+  INFLOW_TYPES,
   invoicesForInstallments,
   type ListTransactionsQuery,
   type MarkPaidBody,
@@ -249,7 +250,11 @@ export class TransactionsService {
   // ---------------------------------------------------------------------------
   // READ
   // ---------------------------------------------------------------------------
-  async list(scope: { userId?: string }, q: ListTransactionsQuery) {
+  /** Monta o `where` de listagem a partir dos filtros (reusado no export CSV). */
+  private listWhere(
+    scope: { userId?: string },
+    q: Omit<ListTransactionsQuery, 'page' | 'pageSize'>,
+  ): Prisma.TransactionWhereInput {
     const EXPENSE_FLOW: TransactionType[] = [
       'EXPENSE',
       'CARD_EXPENSE',
@@ -268,7 +273,7 @@ export class TransactionsService {
       };
     }
 
-    const where: Prisma.TransactionWhereInput = {
+    return {
       ...(scope.userId ? { userId: scope.userId } : {}),
       ...(q.accountId ? { accountId: q.accountId } : {}),
       ...(q.creditCardId ? { creditCardId: q.creditCardId } : {}),
@@ -301,7 +306,10 @@ export class TransactionsService {
           }
         : {}),
     };
+  }
 
+  async list(scope: { userId?: string }, q: ListTransactionsQuery) {
+    const where = this.listWhere(scope, q);
     const [rows, total] = await Promise.all([
       this.db.transaction.findMany({
         where,
@@ -313,6 +321,49 @@ export class TransactionsService {
     ]);
 
     return { data: rows.map((r) => this.present(r)), page: q.page, pageSize: q.pageSize, total };
+  }
+
+  /** Exporta os lançamentos que casam com os filtros como CSV (pt-BR, ';'). */
+  async exportCsv(
+    scope: { userId?: string },
+    q: Omit<ListTransactionsQuery, 'page' | 'pageSize'>,
+  ): Promise<string> {
+    const rows = await this.db.transaction.findMany({
+      where: this.listWhere(scope, q),
+      orderBy: [{ competenceDate: 'desc' }, { createdAt: 'desc' }],
+      take: 5000,
+      include: {
+        account: { select: { name: true } },
+        category: { select: { name: true } },
+        creditCard: { select: { name: true } },
+      },
+    });
+
+    const STATUS: Record<string, string> = {
+      PENDING: 'Pendente',
+      SCHEDULED: 'Agendado',
+      PAID: 'Pago',
+      CANCELED: 'Cancelado',
+    };
+    const esc = (v: string) => (/[";\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+    const header = ['data', 'tipo', 'descricao', 'valor', 'conta', 'cartao', 'categoria', 'status', 'pago_em'];
+    const lines = rows.map((r) => {
+      const signed = INFLOW_TYPES.includes(r.type) ? nb(r.amount) : -nb(r.amount);
+      return [
+        dbDateToIso(r.competenceDate),
+        r.type,
+        r.description,
+        (signed / 100).toFixed(2).replace('.', ','),
+        r.account?.name ?? '',
+        r.creditCard?.name ?? '',
+        r.category?.name ?? '',
+        STATUS[r.status] ?? r.status,
+        r.paidDate ? dbDateToIso(r.paidDate) : '',
+      ]
+        .map((c) => esc(String(c)))
+        .join(';');
+    });
+    return `﻿${header.join(';')}\r\n${lines.join('\r\n')}\r\n`;
   }
 
   async get(scope: { userId?: string }, id: string) {
@@ -331,9 +382,42 @@ export class TransactionsService {
       where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
     });
     if (!current) throw Errors.notFound('Lançamento');
+
+    // ---- edição de série (forward / all) ----
+    // Propaga só campos "de template": descrição, categoria, conta e — apenas
+    // para séries FIXAS — o valor (em INSTALLMENT o valor por parcela vem de
+    // distribute() e não pode ser sobrescrito em bloco). Data/status/pagamento
+    // continuam por ocorrência.
     if (body.scope !== 'one' && current.recurrenceId) {
-      // TODO(fase 2): propagar edição para "forward" / "all" da série
-      throw Errors.notImplemented('Edição de série (forward/all)');
+      const rec = await this.db.recurrence.findUnique({ where: { id: current.recurrenceId } });
+      const canAmount = rec?.mode === 'FIXED';
+      const seriesData = {
+        description: body.description,
+        categoryId: body.categoryId,
+        accountId: body.accountId,
+        ...(canAmount && body.amount != null ? { amount: numToBig(body.amount) } : {}),
+      };
+      await this.db.transaction.updateMany({
+        where: {
+          recurrenceId: current.recurrenceId,
+          status: { not: 'CANCELED' },
+          ...(body.scope === 'forward' ? { competenceDate: { gte: current.competenceDate } } : {}),
+        },
+        data: seriesData,
+      });
+      if (rec) {
+        await this.db.recurrence.update({
+          where: { id: rec.id },
+          data: {
+            description: body.description ?? undefined,
+            categoryId: body.categoryId ?? undefined,
+            accountId: body.accountId ?? undefined,
+            ...(canAmount && body.amount != null ? { amount: numToBig(body.amount) } : {}),
+          },
+        });
+      }
+      const fresh = await this.db.transaction.findUniqueOrThrow({ where: { id } });
+      return this.present(fresh);
     }
 
     const row = await this.db.transaction.update({
@@ -352,6 +436,38 @@ export class TransactionsService {
     });
     if (row.invoiceId) await recalcInvoiceTotal(this.db, row.invoiceId);
     return this.present(row);
+  }
+
+  /** Pula/cancela uma ocorrência (ex.: "esse mês não teve"). */
+  async skip(scope: { userId?: string }, id: string) {
+    const current = await this.db.transaction.findFirst({
+      where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
+    });
+    if (!current) throw Errors.notFound('Lançamento');
+    if (current.status === 'PAID') throw Errors.badRequest('Lançamento já foi pago.');
+    const row = await this.db.transaction.update({ where: { id }, data: { status: 'CANCELED' } });
+    if (row.invoiceId) await recalcInvoiceTotal(this.db, row.invoiceId);
+    return this.present(row);
+  }
+
+  /** Liquida vários lançamentos na mesma data. */
+  async bulkPay(scope: { userId?: string }, ids: string[], paidDate: string) {
+    const rows = await this.db.transaction.findMany({
+      where: {
+        id: { in: ids },
+        ...(scope.userId ? { userId: scope.userId } : {}),
+        status: { in: ['PENDING', 'SCHEDULED'] },
+      },
+      select: { id: true, invoiceId: true },
+    });
+    if (rows.length === 0) return { paid: 0 };
+    await this.db.transaction.updateMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      data: { status: 'PAID', paidDate: isoToDbDate(paidDate) },
+    });
+    const invoiceIds = [...new Set(rows.map((r) => r.invoiceId).filter((v): v is string => !!v))];
+    for (const invId of invoiceIds) await recalcInvoiceTotal(this.db, invId);
+    return { paid: rows.length };
   }
 
   async markPaid(scope: { userId?: string }, id: string, body: MarkPaidBody) {

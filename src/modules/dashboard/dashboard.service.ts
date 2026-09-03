@@ -1,12 +1,18 @@
-import type { PrismaClient } from '@prisma/client';
-import { addDays, endOfMonth, type IsoDate, startOfMonth, todaySP } from '@nodepay/shared';
+import type { PrismaClient, TransactionType } from '@prisma/client';
+import { addDays, addMonths, endOfMonth, type IsoDate, startOfMonth, todaySP } from '@nodepay/shared';
 import { nb } from '../../lib/money.js';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
 import { computeBalances } from '../accounts/balance.js';
 
-const OUT = ['EXPENSE', 'INVOICE_PAYMENT', 'LOAN_INSTALLMENT'];
-const IN = ['INCOME', 'LOAN_DISBURSEMENT'];
+const OUT: TransactionType[] = ['EXPENSE', 'INVOICE_PAYMENT', 'LOAN_INSTALLMENT'];
+const IN: TransactionType[] = ['INCOME', 'LOAN_DISBURSEMENT'];
 const PENDING = ['PENDING', 'SCHEDULED'];
+
+/** (atual − anterior) / |anterior|; null quando anterior = 0. */
+function pct(cur: number, prev: number): number | null {
+  if (prev === 0) return null;
+  return (cur - prev) / Math.abs(prev);
+}
 
 export class DashboardService {
   constructor(private readonly db: PrismaClient) {}
@@ -17,34 +23,65 @@ export class DashboardService {
     const to = endOfMonth(anchor);
     const today = todaySP();
     const inMonth = { gte: isoToDbDate(from), lte: isoToDbDate(to) };
+    const prevFrom = startOfMonth(addMonths(anchor, -1));
+    const prevTo = endOfMonth(addMonths(anchor, -1));
+    // janela para o "gasto médio mensal" (últimos 90 dias liquidados)
+    const runwayFrom = addDays(today, -90);
 
-    const [txns, balances, categories, cards, openInvoices] = await Promise.all([
-      this.db.transaction.findMany({
-        where: { userId, status: { not: 'CANCELED' }, competenceDate: inMonth },
-        select: {
-          type: true,
-          amount: true,
-          status: true,
-          dueDate: true,
-          paidDate: true,
-          categoryId: true,
-          recurrenceId: true,
-          loanId: true,
-          installmentGroupId: true,
-        },
-      }),
-      computeBalances(this.db, { userId }, { dashboardOnly: true }),
-      this.db.category.findMany({ where: { userId }, select: { id: true, name: true, color: true } }),
-      this.db.creditCard.findMany({
-        where: { userId, archived: false },
-        select: { creditLimit: true },
-      }),
-      this.db.invoice.findMany({
-        where: { userId, status: { in: ['OPEN', 'CLOSED'] } },
-        select: { total: true, dueDate: true, status: true },
-        orderBy: { dueDate: 'asc' },
-      }),
-    ]);
+    const [txns, balances, categories, cards, openInvoices, prevAgg, recentOutflow] =
+      await Promise.all([
+        this.db.transaction.findMany({
+          where: { userId, status: { not: 'CANCELED' }, competenceDate: inMonth },
+          select: {
+            type: true,
+            amount: true,
+            status: true,
+            dueDate: true,
+            paidDate: true,
+            categoryId: true,
+            recurrenceId: true,
+            loanId: true,
+            installmentGroupId: true,
+          },
+        }),
+        computeBalances(this.db, { userId }, { dashboardOnly: true }),
+        this.db.category.findMany({ where: { userId }, select: { id: true, name: true, color: true } }),
+        this.db.creditCard.findMany({
+          where: { userId, archived: false },
+          select: { creditLimit: true },
+        }),
+        this.db.invoice.findMany({
+          where: { userId, status: { in: ['OPEN', 'CLOSED'] } },
+          select: { total: true, dueDate: true, status: true },
+          orderBy: { dueDate: 'asc' },
+        }),
+        this.db.transaction.groupBy({
+          by: ['type'],
+          where: {
+            userId,
+            status: 'PAID',
+            competenceDate: { gte: isoToDbDate(prevFrom), lte: isoToDbDate(prevTo) },
+            type: { in: [...IN, ...OUT] },
+          },
+          _sum: { amount: true },
+        }),
+        this.db.transaction.aggregate({
+          where: {
+            userId,
+            status: 'PAID',
+            type: { in: OUT },
+            paidDate: { gte: isoToDbDate(runwayFrom), lte: isoToDbDate(today) },
+          },
+          _sum: { amount: true },
+        }),
+      ]);
+
+    let prevIncome = 0;
+    let prevExpense = 0;
+    for (const g of prevAgg) {
+      if (IN.includes(g.type)) prevIncome += nb(g._sum.amount);
+      if (OUT.includes(g.type)) prevExpense += nb(g._sum.amount);
+    }
 
     const catName = new Map(categories.map((c) => [c.id, c]));
 
@@ -141,11 +178,27 @@ export class DashboardService {
     const openInvoicesTotal = openInvoices.reduce((s, i) => s + nb(i.total), 0);
     const nextUnpaid = openInvoices.find((i) => dbDateToIso(i.dueDate) >= today) ?? openInvoices[0];
 
+    // ---- saúde financeira ----
+    const commitmentRatio = totalIncome > 0 ? committed / totalIncome : 0;
+    const avgMonthlyExpense = nb(recentOutflow._sum.amount) / 3;
+    const health = {
+      savingsRate: totalIncome > 0 ? (totalIncome - totalExpense) / totalIncome : 0,
+      commitmentRatio,
+      runwayMonths: avgMonthlyExpense > 0 ? totalCurrent / avgMonthlyExpense : null,
+    };
+
     return {
       month: anchor.slice(0, 7),
       totalIncome,
       totalExpense,
       net: totalIncome - totalExpense,
+      prevMonth: {
+        income: prevIncome,
+        expense: prevExpense,
+        incomePct: pct(totalIncome, prevIncome),
+        expensePct: pct(totalExpense, prevExpense),
+      },
+      health,
       pendingIncome,
       pendingExpense,
       currentBalance: totalCurrent,
@@ -166,5 +219,48 @@ export class DashboardService {
       },
       cashflow,
     };
+  }
+
+  /**
+   * Patrimônio consolidado ao fim de cada um dos últimos N meses.
+   * Transferências entre contas se cancelam no total, então só somamos
+   * entradas/saídas liquidadas até o fim de cada mês + saldo de abertura.
+   */
+  async netWorth(userId: string, months: number) {
+    const thisMonth = todaySP().slice(0, 7) + '-01';
+    const [accounts, rows] = await Promise.all([
+      this.db.account.findMany({ where: { userId }, select: { openingBalance: true } }),
+      this.db.transaction.findMany({
+        where: {
+          userId,
+          status: { not: 'CANCELED' },
+          paidDate: { not: null },
+          type: { in: [...IN, ...OUT] },
+          accountId: { not: null },
+        },
+        select: { type: true, amount: true, paidDate: true },
+      }),
+    ]);
+
+    const opening = accounts.reduce((s, a) => s + nb(a.openingBalance), 0);
+    const deltas = rows
+      .map((r) => ({
+        date: dbDateToIso(r.paidDate as Date),
+        v: IN.includes(r.type) ? nb(r.amount) : -nb(r.amount),
+      }))
+      .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+    const points: { month: string; total: number }[] = [];
+    let i = 0;
+    let running = opening;
+    for (let k = months - 1; k >= 0; k--) {
+      const monthEnd = endOfMonth(addMonths(thisMonth as IsoDate, -k));
+      while (i < deltas.length && deltas[i]!.date <= monthEnd) {
+        running += deltas[i]!.v;
+        i++;
+      }
+      points.push({ month: monthEnd.slice(0, 7), total: running });
+    }
+    return { points };
   }
 }

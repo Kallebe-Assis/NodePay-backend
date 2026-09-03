@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  bulkPayBodySchema,
+  bulkPayResponseSchema,
   createTransactionBodySchema,
   importCommitResponseSchema,
   importPreviewBodySchema,
@@ -98,6 +100,31 @@ export async function transactionRoutes(fastify: FastifyInstance) {
     '/:id/unpay',
     { schema: { tags: ['transactions'], params: z.object({ id: z.string() }), response: { 200: transactionSchema } } },
     (req) => svc().markUnpaid(ownerFilter(req), req.params.id),
+  );
+
+  app.post(
+    '/:id/skip',
+    { schema: { tags: ['transactions'], params: z.object({ id: z.string() }), response: { 200: transactionSchema } } },
+    (req) => svc().skip(ownerFilter(req), req.params.id),
+  );
+
+  app.post(
+    '/bulk-pay',
+    { schema: { tags: ['transactions'], body: bulkPayBodySchema, response: { 200: bulkPayResponseSchema } } },
+    (req) => svc().bulkPay(ownerFilter(req), req.body.ids, req.body.paidDate),
+  );
+
+  // Exporta os lançamentos que casam com os MESMOS filtros da listagem, em CSV.
+  app.get(
+    '/export',
+    { schema: { tags: ['transactions'], querystring: listTransactionsQuerySchema } },
+    async (req, reply) => {
+      const csv = await svc().exportCsv(ownerFilter(req, req.query.userId), req.query);
+      reply
+        .header('Content-Type', 'text/csv; charset=utf-8')
+        .header('Content-Disposition', 'attachment; filename="lancamentos.csv"')
+        .send(csv);
+    },
   );
 
   app.delete(

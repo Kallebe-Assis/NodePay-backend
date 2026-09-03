@@ -122,18 +122,20 @@ model User {
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
 
-  sessions     Session[]
-  accounts     Account[]
-  categories   Category[]
-  creditCards  CreditCard[]
-  transactions Transaction[]
-  recurrences  Recurrence[]
-  invoices     Invoice[]
-  loans        Loan[]
-  settings     UserSettings?
-  backupRuns   BackupRun[]
-  auditLogs    AuditLog[]
-  goals        Goal[]
+  sessions      Session[]
+  accounts      Account[]
+  categories    Category[]
+  creditCards   CreditCard[]
+  transactions  Transaction[]
+  recurrences   Recurrence[]
+  invoices      Invoice[]
+  loans         Loan[]
+  settings      UserSettings?
+  backupRuns    BackupRun[]
+  auditLogs     AuditLog[]
+  goals         Goal[]
+  budgets       Budget[]
+  categoryRules CategoryRule[]
 
   @@index([status])
   @@index([role])
@@ -142,19 +144,19 @@ model User {
 
 /// Refresh tokens (um por login/dispositivo). Guardamos só o hash.
 model Session {
-  id         String   @id @default(cuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tokenHash  String   @unique
-  userAgent  String?
-  ip         String?
-  expiresAt  DateTime
-  revokedAt  DateTime?
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash    String    @unique
+  userAgent    String?
+  ip           String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
   /// id da sessão que substituiu esta numa rotação de refresh token.
   /// Se um token já revogado COM este campo preenchido for reapresentado,
   /// tratamos como reuso (token roubado) e derrubamos todas as sessões.
   replacedById String?
-  createdAt  DateTime @default(now())
+  createdAt    DateTime  @default(now())
 
   @@index([userId])
   @@map("sessions")
@@ -204,10 +206,12 @@ model Category {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  transactions Transaction[]
-  recurrences  Recurrence[]
-  loans        Loan[]
-  goals        Goal[]
+  transactions  Transaction[]
+  recurrences   Recurrence[]
+  loans         Loan[]
+  goals         Goal[]
+  budgets       Budget[]
+  categoryRules CategoryRule[]
 
   @@unique([userId, kind, name])
   @@index([userId])
@@ -218,22 +222,22 @@ model Category {
 // Cartão de crédito e fatura
 // ---------------------------------------------------------------------------
 model CreditCard {
-  id                       String   @id @default(cuid())
-  userId                   String
-  user                     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name                     String
-  lastDigits               String?
-  brand                    String?
-  bankId                   String?
-  creditLimit              BigInt   @default(0)
-  closingDay               Int
-  dueDay                   Int
-  defaultPaymentAccountId  String?
-  defaultPaymentAccount    Account? @relation("CardDefaultPaymentAccount", fields: [defaultPaymentAccountId], references: [id], onDelete: SetNull)
-  color                    String?
-  archived                 Boolean  @default(false)
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  id                      String   @id @default(cuid())
+  userId                  String
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                    String
+  lastDigits              String?
+  brand                   String?
+  bankId                  String?
+  creditLimit             BigInt   @default(0)
+  closingDay              Int
+  dueDay                  Int
+  defaultPaymentAccountId String?
+  defaultPaymentAccount   Account? @relation("CardDefaultPaymentAccount", fields: [defaultPaymentAccountId], references: [id], onDelete: SetNull)
+  color                   String?
+  archived                Boolean  @default(false)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 
   invoices     Invoice[]
   transactions Transaction[]
@@ -290,7 +294,7 @@ model Recurrence {
   description String
   accountId   String?
   categoryId  String?
-  category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  category    Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
 
   /// até quando já materializamos lançamentos desta regra
   materializedUntil DateTime? @db.Date
@@ -355,7 +359,7 @@ model Transaction {
   loanInstallment   LoanInstallment? @relation(fields: [loanInstallmentId], references: [id], onDelete: SetNull)
 
   // transferência: as 2 pernas compartilham o mesmo grupo
-  transferGroupId String?
+  transferGroupId     String?
   transferToAccountId String?
   transferToAccount   Account? @relation("TransferToAccount", fields: [transferToAccountId], references: [id], onDelete: SetNull)
 
@@ -386,34 +390,78 @@ model Transaction {
 // Objetivos / metas financeiras
 // ---------------------------------------------------------------------------
 model Goal {
-  id             String         @id @default(cuid())
-  userId         String
-  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title          String
-  type           GoalType
-  targetAmount   BigInt
-  recurrence     GoalRecurrence @default(MONTHLY)
-  monthsCount    Int? // usado quando recurrence = N_MONTHS
+  id                 String         @id @default(cuid())
+  userId             String
+  user               User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title              String
+  type               GoalType
+  targetAmount       BigInt
+  recurrence         GoalRecurrence @default(MONTHLY)
+  monthsCount        Int? // usado quando recurrence = N_MONTHS
   /// mês de início / referência: 'YYYY-MM-01'
-  startMonth     DateTime       @db.Date
+  startMonth         DateTime       @db.Date
   /// filtro opcional (SPEND_MAX / EARN_MIN)
-  categoryId     String?
-  category       Category?      @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  notifySystem   Boolean        @default(true)
-  notifyTelegram Boolean        @default(false)
-  notifyEmail    Boolean        @default(false)
-  active         Boolean        @default(true)
+  categoryId         String?
+  category           Category?      @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  notifySystem       Boolean        @default(true)
+  notifyTelegram     Boolean        @default(false)
+  notifyEmail        Boolean        @default(false)
+  active             Boolean        @default(true)
   /// último período 'YYYY-MM' já notificado (evita repetir no Telegram)
   lastNotifiedPeriod String?
   /// quantas vezes o objetivo foi conquistado num período encerrado
-  timesAchieved  Int            @default(0)
+  timesAchieved      Int            @default(0)
   /// último período 'YYYY-MM' conquistado (registrado após o mês encerrar)
   lastAchievedPeriod String?
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
   @@index([userId, active])
   @@map("goals")
+}
+
+// ---------------------------------------------------------------------------
+// Orçamento mensal por categoria (envelope). Progresso = despesas PAGAS +
+// pendentes da categoria no mês corrente. Um por (usuário, categoria).
+// ---------------------------------------------------------------------------
+model Budget {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  /// teto mensal em centavos
+  amount     BigInt
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, categoryId])
+  @@index([userId])
+  @@map("budgets")
+}
+
+// ---------------------------------------------------------------------------
+// Regras de auto-categorização: se a descrição contém `match` (case-insensitive),
+// sugere/atribui `categoryId`. Aplicadas na importação CSV e como sugestão no
+// formulário de lançamento manual.
+// ---------------------------------------------------------------------------
+model CategoryRule {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// trecho procurado na descrição (guardado já normalizado, minúsculo)
+  match      String
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  /// maior prioridade vence quando várias regras casam
+  priority   Int      @default(0)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId])
+  @@map("category_rules")
 }
 
 // ---------------------------------------------------------------------------
@@ -486,21 +534,21 @@ model UserSettings {
   backupLastStatus    String?
 
   // ----- Telegram / entrega de relatório -----
-  telegramEnabled     Boolean  @default(false)
+  telegramEnabled     Boolean @default(false)
   telegramChatId      String?
-  telegramLinkToken   String?  @unique
+  telegramLinkToken   String? @unique
   /// token do bot criptografado (opcional; senão usa env TELEGRAM_BOT_TOKEN)
   telegramBotTokenEnc String?
-  telegramDailyDigest Boolean  @default(false)
-  telegramDigestHour  Int      @default(8)
+  telegramDailyDigest Boolean @default(false)
+  telegramDigestHour  Int     @default(8)
 
   // ----- Notificações (preferências) -----
-  notifyBillsDue         Boolean @default(true)
-  notifyInvoiceClosing   Boolean @default(true)
-  notifyLowBalance       Boolean @default(true)
-  notifyWeeklySummary    Boolean @default(false)
-  notifyPendingUsers     Boolean @default(true) // só admin
-  lowBalanceThreshold    BigInt  @default(0) // centavos; 0 = desligado
+  notifyBillsDue       Boolean @default(true)
+  notifyInvoiceClosing Boolean @default(true)
+  notifyLowBalance     Boolean @default(true)
+  notifyWeeklySummary  Boolean @default(false)
+  notifyPendingUsers   Boolean @default(true) // só admin
+  lowBalanceThreshold  BigInt  @default(0) // centavos; 0 = desligado
 
   // ----- Aparência -----
   themePref String @default("system") // system | light | dark
@@ -511,30 +559,30 @@ model UserSettings {
 }
 
 model BackupRun {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  startedAt DateTime @default(now())
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  startedAt  DateTime  @default(now())
   finishedAt DateTime?
-  status    String // 'running' | 'success' | 'error'
-  objectKey String?
-  sizeBytes BigInt?
-  checksum  String?
-  error     String?
+  status     String // 'running' | 'success' | 'error'
+  objectKey  String?
+  sizeBytes  BigInt?
+  checksum   String?
+  error      String?
 
   @@index([userId, startedAt])
   @@map("backup_runs")
 }
 
 model AuditLog {
-  id         String   @id @default(cuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  entity     String
-  entityId   String
-  action     String // 'create' | 'update' | 'delete' | ...
-  diff       Json?
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entity    String
+  entityId  String
+  action    String // 'create' | 'update' | 'delete' | ...
+  diff      Json?
+  createdAt DateTime @default(now())
 
   @@index([userId, createdAt])
   @@index([entity, entityId])

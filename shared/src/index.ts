@@ -19,3 +19,7 @@ export * from './schemas/dashboard.js';
 export * from './schemas/notification.js';
 export * from './schemas/settings.js';
 export * from './schemas/report.js';
+export * from './schemas/budget.js';
+export * from './schemas/category-rule.js';
+export * from './schemas/recurrence.js';
+export * from './schemas/search.js';

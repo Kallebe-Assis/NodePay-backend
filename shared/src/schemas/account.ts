@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AccountType } from '../constants.js';
+import { isoDateSchema } from './common.js';
 
 export const accountTypeSchema = z.nativeEnum(AccountType);
 
@@ -24,6 +25,24 @@ export type CreateAccountBody = z.infer<typeof createAccountBodySchema>;
 
 export const updateAccountBodySchema = createAccountBodySchema.partial();
 export type UpdateAccountBody = z.infer<typeof updateAccountBodySchema>;
+
+/**
+ * Conciliação: informa o saldo REAL da conta (o que o banco mostra) e a API
+ * cria um lançamento de ajuste para a diferença.
+ */
+export const reconcileAccountBodySchema = z.object({
+  targetBalance: z.number().int(), // saldo desejado, centavos (pode ser negativo)
+  date: isoDateSchema.optional(), // data do ajuste; padrão = hoje
+  note: z.string().max(120).optional(),
+});
+export type ReconcileAccountBody = z.infer<typeof reconcileAccountBodySchema>;
+
+export const reconcileAccountResponseSchema = z.object({
+  adjusted: z.boolean(), // false = já estava batido
+  delta: z.number().int(),
+  transactionId: z.string().nullable(),
+});
+export type ReconcileAccountResponse = z.infer<typeof reconcileAccountResponseSchema>;
 
 export const accountSchema = z.object({
   id: z.string(),

@@ -199,3 +199,13 @@ export type ImportPreviewResponse = z.infer<typeof importPreviewResponseSchema>;
 
 export const importCommitResponseSchema = z.object({ created: z.number().int() });
 export type ImportCommitResponse = z.infer<typeof importCommitResponseSchema>;
+
+/** Liquidar vários lançamentos de uma vez (tela de Lançamentos). */
+export const bulkPayBodySchema = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(200),
+  paidDate: isoDateSchema,
+});
+export type BulkPayBody = z.infer<typeof bulkPayBodySchema>;
+
+export const bulkPayResponseSchema = z.object({ paid: z.number().int() });
+export type BulkPayResponse = z.infer<typeof bulkPayResponseSchema>;

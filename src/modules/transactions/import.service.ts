@@ -32,12 +32,27 @@ export async function previewImport(db: PrismaClient, userId: string, csv: strin
     throw Errors.badRequest(`Máximo de ${IMPORT_MAX_ROWS} lançamentos por importação.`);
   }
 
-  const [accounts, categories] = await Promise.all([
+  const [accounts, categories, rules] = await Promise.all([
     db.account.findMany({ where: { userId, archived: false }, select: { id: true, name: true } }),
     db.category.findMany({ where: { userId }, select: { id: true, name: true, kind: true } }),
+    db.categoryRule.findMany({
+      where: { userId, active: true },
+      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+      select: { match: true, categoryId: true },
+    }),
   ]);
   const accByName = new Map(accounts.map((a) => [norm(a.name), a]));
   const catByName = new Map(categories.map((c) => [norm(c.name), c]));
+  const catById = new Map(categories.map((c) => [c.id, c]));
+
+  /** aplica as regras de auto-categorização a uma descrição (em memória). */
+  const ruleCategory = (description: string) => {
+    const hay = norm(description);
+    for (const r of rules) {
+      if (r.match && hay.includes(r.match)) return catById.get(r.categoryId) ?? null;
+    }
+    return null;
+  };
 
   const rows: ImportRow[] = records.map((rec, i) => {
     const line = i + 2; // +1 header, +1 base-1
@@ -81,7 +96,12 @@ export async function previewImport(db: PrismaClient, userId: string, csv: strin
     const acc = accByName.get(norm(draft.accountName));
     if (!acc) errs.push(`conta "${draft.accountName}" não encontrada`);
 
-    // categoria (opcional)
+    // categoria (opcional). Sem categoria no CSV → tenta as regras de
+    // auto-categorização pela descrição.
+    if (!draft.categoryName && draft.description) {
+      const byRule = ruleCategory(draft.description);
+      if (byRule) draft.categoryName = byRule.name;
+    }
     if (draft.categoryName) {
       const cat = catByName.get(norm(draft.categoryName));
       if (!cat) errs.push(`categoria "${draft.categoryName}" não encontrada`);

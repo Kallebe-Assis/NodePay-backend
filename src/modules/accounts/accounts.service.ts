@@ -1,7 +1,9 @@
 import type { PrismaClient } from '@prisma/client';
-import type { CreateAccountBody, UpdateAccountBody } from '@nodepay/shared';
+import type { CreateAccountBody, ReconcileAccountBody, UpdateAccountBody } from '@nodepay/shared';
+import { todaySP } from '@nodepay/shared';
 import { Errors } from '../../lib/errors.js';
 import { nb, numToBig } from '../../lib/money.js';
+import { isoToDbDate } from '../../lib/date.js';
 import { computeBalances } from './balance.js';
 
 type Scope = { userId?: string };
@@ -82,6 +84,44 @@ export class AccountsService {
     });
     const balances = await computeBalances(this.db, { userId: owner }, { accountId: id });
     return this.present(acc, balances.get(id));
+  }
+
+  /**
+   * Conciliação: cria um lançamento de ajuste (PAGO) para casar o saldo ATUAL
+   * da conta com o `targetBalance` informado. Categoria "Ajuste de saldo"
+   * (criada sob demanda, do tipo certo conforme o sinal do ajuste).
+   */
+  async reconcile(scope: Scope, id: string, body: ReconcileAccountBody) {
+    const owner = await this.assertOwner(scope, id);
+    const balances = await computeBalances(this.db, { userId: owner }, { accountId: id });
+    const current = balances.get(id)?.currentBalance ?? 0;
+    const delta = body.targetBalance - current;
+    if (delta === 0) return { adjusted: false, delta: 0, transactionId: null };
+
+    const kind = delta > 0 ? 'INCOME' : 'EXPENSE';
+    const category = await this.db.category.upsert({
+      where: {
+        userId_kind_name: { userId: owner, kind, name: 'Ajuste de saldo' },
+      },
+      create: { userId: owner, kind, name: 'Ajuste de saldo', icon: 'Scale' },
+      update: {},
+    });
+    const date = isoToDbDate(body.date ?? todaySP());
+    const tx = await this.db.transaction.create({
+      data: {
+        userId: owner,
+        type: kind === 'INCOME' ? 'INCOME' : 'EXPENSE',
+        amount: numToBig(Math.abs(delta)),
+        description: body.note?.trim() || 'Ajuste de saldo (conciliação)',
+        competenceDate: date,
+        dueDate: date,
+        paidDate: date,
+        status: 'PAID',
+        accountId: id,
+        categoryId: category.id,
+      },
+    });
+    return { adjusted: true, delta, transactionId: tx.id };
   }
 
   async remove(scope: Scope, id: string) {

@@ -5,6 +5,8 @@ import {
   accountSchema,
   booleanish,
   createAccountBodySchema,
+  reconcileAccountBodySchema,
+  reconcileAccountResponseSchema,
   updateAccountBodySchema,
 } from '@nodepay/shared';
 import { AccountsService } from './accounts.service.js';
@@ -62,6 +64,19 @@ export async function accountRoutes(fastify: FastifyInstance) {
       },
     },
     (req) => svc().update(ownerFilter(req), req.params.id, req.body),
+  );
+
+  app.post(
+    '/:id/reconcile',
+    {
+      schema: {
+        tags: ['accounts'],
+        params: z.object({ id: z.string() }),
+        body: reconcileAccountBodySchema,
+        response: { 200: reconcileAccountResponseSchema },
+      },
+    },
+    (req) => svc().reconcile(ownerFilter(req), req.params.id, req.body),
   );
 
   app.delete(
