@@ -22,11 +22,33 @@ npm run dev               # porta 3333
 ### Produção
 
 ```bash
-npm ci
-npm run db:deploy         # prisma migrate deploy
-npm run build             # bundle único em dist/main.js (tsup)
+npm ci                    # postinstall roda `prisma generate`
+npm run build             # tsup -> dist/main.js  (OBRIGATÓRIO: dist/ NÃO vai no git)
+npm run db:deploy         # prisma migrate deploy  (opcional/pré-deploy)
 npm start                 # node dist/main.js
 ```
+
+> `dist/` está no `.gitignore`, então **o build tem que rodar no servidor**.
+> Sem `npm run build` você recebe `Cannot find module .../dist/main.js` ao iniciar.
+> `prisma`, `tsup`, `tsx` e `typescript` estão em `dependencies` (não `devDependencies`)
+> justamente para o build funcionar mesmo com `NODE_ENV=production`.
+
+### Deploy no Render (Web Service)
+
+| Campo | Valor |
+|---|---|
+| **Root Directory** | *(vazio — o repo `NodePay-backend` já tem tudo na raiz)* |
+| **Build Command** | `npm install && npm run build` |
+| **Start Command** | `npm start` |
+| **Pre-Deploy Command** | `npm run db:deploy` *(opcional, aplica migrações)* |
+| **Environment** | Node · versão pelo `.nvmrc` (22) |
+
+Variáveis de ambiente (a partir de `.env.example`): `DATABASE_URL` (com pooler,
+`?pgbouncer=true&connection_limit=1`), `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`,
+`SECRETS_ENCRYPTION_KEY`, `WEB_ORIGIN` (= URL do front), `NODE_ENV=production`.
+Health check path: `/health`.
+
+Railway/Fly seguem a mesma ideia (build = `npm run build`, start = `npm start`).
 
 ## Código compartilhado
 
