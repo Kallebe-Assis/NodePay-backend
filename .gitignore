@@ -1,0 +1,17 @@
+# deps / build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# ambiente (segredos)
+.env
+.env.*
+!.env.example
+
+# prisma
+prisma/*.db
+prisma/migrations/dev/
+
+# artefatos de runtime
+.reports/
+*.log

@@ -1,0 +1,535 @@
+// =============================================================================
+// NodePay - modelo de dados
+// -----------------------------------------------------------------------------
+// Convenções:
+//  - Dinheiro: SEMPRE BigInt em centavos. Nunca Float.
+//  - Datas de calendário (competência, vencimento, pagamento): @db.Date.
+//  - Instantes (createdAt/updatedAt): DateTime (timestamptz).
+//  - Multiusuário: toda tabela de domínio tem userId + índice; deleção em
+//    cascata a partir de User.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums (espelham backend/shared/src/constants.ts)
+// ---------------------------------------------------------------------------
+enum AccountType {
+  CHECKING
+  SAVINGS
+  CASH
+  WALLET
+}
+
+enum CategoryKind {
+  INCOME
+  EXPENSE
+}
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+enum TransactionType {
+  EXPENSE
+  INCOME
+  TRANSFER
+  CARD_EXPENSE
+  INVOICE_PAYMENT
+  LOAN_DISBURSEMENT
+  LOAN_INSTALLMENT
+}
+
+enum TransactionStatus {
+  PENDING
+  SCHEDULED
+  PAID
+  CANCELED
+}
+
+enum RecurrenceMode {
+  FIXED
+  INSTALLMENT
+}
+
+enum RecurrenceFrequency {
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+enum InvoiceStatus {
+  OPEN
+  CLOSED
+  PAID
+}
+
+enum LoanSystem {
+  PRICE
+  SAC
+}
+
+enum LoanStatus {
+  ACTIVE
+  SETTLED
+  CANCELED
+}
+
+enum BackupFrequency {
+  DAILY
+  WEEKLY
+}
+
+enum GoalType {
+  SPEND_MAX // gastar no máximo X no período
+  EARN_MIN // receber pelo menos X no período
+  NET_MIN // (receitas - despesas) >= X no período
+  END_BALANCE_MIN // terminar o período com saldo total >= X
+}
+
+enum GoalRecurrence {
+  ONCE
+  MONTHLY
+  N_MONTHS
+}
+
+// ---------------------------------------------------------------------------
+// Identidade
+// ---------------------------------------------------------------------------
+model User {
+  id           String     @id @default(cuid())
+  name         String
+  email        String     @unique
+  passwordHash String
+  role         UserRole   @default(USER)
+  status       UserStatus @default(PENDING)
+  approvedAt   DateTime?
+  approvedById String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  sessions     Session[]
+  accounts     Account[]
+  categories   Category[]
+  creditCards  CreditCard[]
+  transactions Transaction[]
+  recurrences  Recurrence[]
+  invoices     Invoice[]
+  loans        Loan[]
+  settings     UserSettings?
+  backupRuns   BackupRun[]
+  auditLogs    AuditLog[]
+  goals        Goal[]
+
+  @@index([status])
+  @@index([role])
+  @@map("users")
+}
+
+/// Refresh tokens (um por login/dispositivo). Guardamos só o hash.
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  userAgent  String?
+  ip         String?
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ---------------------------------------------------------------------------
+// Contas e categorias
+// ---------------------------------------------------------------------------
+model Account {
+  id                 String      @id @default(cuid())
+  userId             String
+  user               User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name               String
+  type               AccountType
+  openingBalance     BigInt      @default(0)
+  color              String?
+  icon               String?
+  /// conta pré-selecionada nos formulários (uma por usuário)
+  isDefault          Boolean     @default(false)
+  /// entra nos totais e gráficos do dashboard
+  includeInDashboard Boolean     @default(true)
+  archived           Boolean     @default(false)
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+
+  transactions        Transaction[] @relation("AccountTransactions")
+  transfersIn         Transaction[] @relation("TransferToAccount")
+  cardsAsDefaultPayer CreditCard[]  @relation("CardDefaultPaymentAccount")
+  loanDisbursements   Loan[]        @relation("LoanDisbursementAccount")
+
+  @@index([userId])
+  @@map("accounts")
+}
+
+model Category {
+  id        String       @id @default(cuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  kind      CategoryKind
+  parentId  String?
+  parent    Category?    @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Category[]   @relation("CategoryTree")
+  color     String?
+  icon      String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  transactions Transaction[]
+  recurrences  Recurrence[]
+  loans        Loan[]
+  goals        Goal[]
+
+  @@unique([userId, kind, name])
+  @@index([userId])
+  @@map("categories")
+}
+
+// ---------------------------------------------------------------------------
+// Cartão de crédito e fatura
+// ---------------------------------------------------------------------------
+model CreditCard {
+  id                       String   @id @default(cuid())
+  userId                   String
+  user                     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                     String
+  lastDigits               String?
+  brand                    String?
+  bankId                   String?
+  creditLimit              BigInt   @default(0)
+  closingDay               Int
+  dueDay                   Int
+  defaultPaymentAccountId  String?
+  defaultPaymentAccount    Account? @relation("CardDefaultPaymentAccount", fields: [defaultPaymentAccountId], references: [id], onDelete: SetNull)
+  color                    String?
+  archived                 Boolean  @default(false)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  invoices     Invoice[]
+  transactions Transaction[]
+
+  @@index([userId])
+  @@map("credit_cards")
+}
+
+model Invoice {
+  id                String        @id @default(cuid())
+  userId            String
+  user              User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  creditCardId      String
+  creditCard        CreditCard    @relation(fields: [creditCardId], references: [id], onDelete: Cascade)
+  referenceMonth    DateTime      @db.Date // 'YYYY-MM-01'
+  periodStart       DateTime      @db.Date
+  periodEnd         DateTime      @db.Date
+  closingDate       DateTime      @db.Date
+  dueDate           DateTime      @db.Date
+  status            InvoiceStatus @default(OPEN)
+  /// total materializado (soma das parcelas do período). Recalculável.
+  total             BigInt        @default(0)
+  paidTransactionId String?       @unique
+  paidTransaction   Transaction?  @relation("InvoicePayment", fields: [paidTransactionId], references: [id], onDelete: SetNull)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  items Transaction[] @relation("InvoiceItems")
+
+  @@unique([creditCardId, referenceMonth])
+  @@index([userId])
+  @@map("invoices")
+}
+
+// ---------------------------------------------------------------------------
+// Recorrência (regra que materializa lançamentos)
+// ---------------------------------------------------------------------------
+model Recurrence {
+  id          String              @id @default(cuid())
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mode        RecurrenceMode
+  frequency   RecurrenceFrequency @default(MONTHLY)
+  interval    Int                 @default(1)
+  dayOfMonth  Int?
+  startDate   DateTime            @db.Date
+  endDate     DateTime?           @db.Date
+  occurrences Int? // preenchido quando mode = INSTALLMENT
+
+  // template do lançamento gerado
+  type        TransactionType
+  direction   String // 'expense' | 'income'
+  amount      BigInt
+  description String
+  accountId   String?
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  /// até quando já materializamos lançamentos desta regra
+  materializedUntil DateTime? @db.Date
+  active            Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  transactions Transaction[]
+
+  @@index([userId])
+  @@index([active, materializedUntil])
+  @@map("recurrences")
+}
+
+// ---------------------------------------------------------------------------
+// Livro-razão: a tabela central
+// ---------------------------------------------------------------------------
+model Transaction {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type   TransactionType
+  status TransactionStatus @default(PENDING)
+
+  /// SEMPRE positivo. O sinal (entra/sai) vem de `type`.
+  amount      BigInt
+  description String
+
+  /// quando o fato aconteceu (data da compra / competência)
+  competenceDate DateTime  @db.Date
+  /// quando se espera pagar/receber
+  dueDate        DateTime  @db.Date
+  /// quando efetivamente liquidou (null = pendente). Afeta o saldo atual.
+  paidDate       DateTime? @db.Date
+
+  // --- vínculos (todos opcionais; dependem do tipo) ---
+  accountId String?
+  account   Account? @relation("AccountTransactions", fields: [accountId], references: [id], onDelete: Cascade)
+
+  creditCardId String?
+  creditCard   CreditCard? @relation(fields: [creditCardId], references: [id], onDelete: Cascade)
+
+  invoiceId String?
+  invoice   Invoice? @relation("InvoiceItems", fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  categoryId String?
+  category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  recurrenceId String?
+  recurrence   Recurrence? @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
+
+  // parcelamento (cartão ou avulso)
+  installmentGroupId String?
+  installmentNumber  Int?
+  installmentTotal   Int?
+
+  // empréstimo
+  loanId            String?
+  loan              Loan?            @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  loanInstallmentId String?          @unique
+  loanInstallment   LoanInstallment? @relation(fields: [loanInstallmentId], references: [id], onDelete: SetNull)
+
+  // transferência: as 2 pernas compartilham o mesmo grupo
+  transferGroupId String?
+  transferToAccountId String?
+  transferToAccount   Account? @relation("TransferToAccount", fields: [transferToAccountId], references: [id], onDelete: SetNull)
+
+  // lembrete no Telegram antes do vencimento
+  remindTelegram   Boolean   @default(false)
+  remindDaysBefore Int       @default(1)
+  reminderSentAt   DateTime?
+
+  // fatura paga por este lançamento (lado inverso de Invoice.paidTransaction)
+  paidInvoice Invoice? @relation("InvoicePayment")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, competenceDate])
+  @@index([userId, dueDate])
+  @@index([userId, status])
+  @@index([remindTelegram, reminderSentAt])
+  @@index([accountId, paidDate])
+  @@index([invoiceId])
+  @@index([installmentGroupId])
+  @@index([transferGroupId])
+  @@index([loanId])
+  @@map("transactions")
+}
+
+// ---------------------------------------------------------------------------
+// Objetivos / metas financeiras
+// ---------------------------------------------------------------------------
+model Goal {
+  id             String         @id @default(cuid())
+  userId         String
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title          String
+  type           GoalType
+  targetAmount   BigInt
+  recurrence     GoalRecurrence @default(MONTHLY)
+  monthsCount    Int? // usado quando recurrence = N_MONTHS
+  /// mês de início / referência: 'YYYY-MM-01'
+  startMonth     DateTime       @db.Date
+  /// filtro opcional (SPEND_MAX / EARN_MIN)
+  categoryId     String?
+  category       Category?      @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  notifySystem   Boolean        @default(true)
+  notifyTelegram Boolean        @default(false)
+  notifyEmail    Boolean        @default(false)
+  active         Boolean        @default(true)
+  /// último período 'YYYY-MM' já notificado (evita repetir no Telegram)
+  lastNotifiedPeriod String?
+  /// quantas vezes o objetivo foi conquistado num período encerrado
+  timesAchieved  Int            @default(0)
+  /// último período 'YYYY-MM' conquistado (registrado após o mês encerrar)
+  lastAchievedPeriod String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([userId, active])
+  @@map("goals")
+}
+
+// ---------------------------------------------------------------------------
+// Empréstimos
+// ---------------------------------------------------------------------------
+model Loan {
+  id                    String     @id @default(cuid())
+  userId                String
+  user                  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lender                String
+  principal             BigInt
+  /// juros ao mês em fração (ex.: 0.0199)
+  monthlyRate           Float
+  installmentsCount     Int
+  firstDueDate          DateTime   @db.Date
+  system                LoanSystem @default(PRICE)
+  status                LoanStatus @default(ACTIVE)
+  notes                 String?
+  disbursementAccountId String?
+  disbursementAccount   Account?   @relation("LoanDisbursementAccount", fields: [disbursementAccountId], references: [id], onDelete: SetNull)
+  categoryId            String?
+  category              Category?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+
+  installments LoanInstallment[]
+  transactions Transaction[]
+
+  @@index([userId])
+  @@map("loans")
+}
+
+model LoanInstallment {
+  id           String   @id @default(cuid())
+  loanId       String
+  loan         Loan     @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  number       Int
+  dueDate      DateTime @db.Date
+  interest     BigInt
+  principal    BigInt
+  amount       BigInt
+  balanceAfter BigInt
+  createdAt    DateTime @default(now())
+
+  payment Transaction?
+
+  @@unique([loanId, number])
+  @@index([loanId])
+  @@map("loan_installments")
+}
+
+// ---------------------------------------------------------------------------
+// Configurações, backup e auditoria
+// ---------------------------------------------------------------------------
+model UserSettings {
+  userId String @id
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // ----- Backup (Backblaze B2 / S3 compatible) -----
+  backupEnabled       Boolean         @default(false)
+  backupFrequency     BackupFrequency @default(DAILY)
+  backupRetentionDays Int             @default(30)
+  backupS3Endpoint    String?
+  backupRegion        String?
+  backupBucket        String?
+  /// segredos criptografados com SECRETS_ENCRYPTION_KEY (nunca retornados)
+  backupKeyIdEnc      String?
+  backupAppKeyEnc     String?
+  backupLastRunAt     DateTime?
+  backupLastStatus    String?
+
+  // ----- Telegram / entrega de relatório -----
+  telegramEnabled     Boolean  @default(false)
+  telegramChatId      String?
+  telegramLinkToken   String?  @unique
+  telegramDailyDigest Boolean  @default(false)
+  telegramDigestHour  Int      @default(8)
+
+  // ----- Notificações (preferências) -----
+  notifyBillsDue         Boolean @default(true)
+  notifyInvoiceClosing   Boolean @default(true)
+  notifyLowBalance       Boolean @default(true)
+  notifyWeeklySummary    Boolean @default(false)
+  notifyPendingUsers     Boolean @default(true) // só admin
+  lowBalanceThreshold    BigInt  @default(0) // centavos; 0 = desligado
+
+  // ----- Aparência -----
+  themePref String @default("system") // system | light | dark
+
+  updatedAt DateTime @updatedAt
+
+  @@map("user_settings")
+}
+
+model BackupRun {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  startedAt DateTime @default(now())
+  finishedAt DateTime?
+  status    String // 'running' | 'success' | 'error'
+  objectKey String?
+  sizeBytes BigInt?
+  checksum  String?
+  error     String?
+
+  @@index([userId, startedAt])
+  @@map("backup_runs")
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entity     String
+  entityId   String
+  action     String // 'create' | 'update' | 'delete' | ...
+  diff       Json?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([entity, entityId])
+  @@map("audit_logs")
+}

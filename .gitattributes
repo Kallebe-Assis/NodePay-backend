@@ -1,0 +1,15 @@
+# Normaliza finais de linha: no repo sempre LF; no checkout, o Git decide.
+* text=auto eol=lf
+
+# Binários — nunca normalizar.
+*.jpg   binary
+*.jpeg  binary
+*.png   binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.woff  binary
+*.woff2 binary
+
+# Scripts .bat do Windows precisam de CRLF.
+*.bat text eol=crlf

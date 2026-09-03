@@ -1,0 +1,121 @@
+import type { PrismaClient } from '@prisma/client';
+import type { CreateAccountBody, UpdateAccountBody } from '@nodepay/shared';
+import { Errors } from '../../lib/errors.js';
+import { nb, numToBig } from '../../lib/money.js';
+import { computeBalances } from './balance.js';
+
+type Scope = { userId?: string };
+
+export class AccountsService {
+  constructor(private readonly db: PrismaClient) {}
+
+  async list(scope: Scope, includeArchived = false) {
+    const where = { ...(scope.userId ? { userId: scope.userId } : {}) };
+    const [accounts, balances] = await Promise.all([
+      this.db.account.findMany({
+        where: { ...where, ...(includeArchived ? {} : { archived: false }) },
+        orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+      }),
+      computeBalances(this.db, scope),
+    ]);
+    return accounts.map((a) => this.present(a, balances.get(a.id)));
+  }
+
+  async get(scope: Scope, id: string) {
+    const acc = await this.db.account.findFirst({
+      where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
+    });
+    if (!acc) throw Errors.notFound('Conta');
+    const balances = await computeBalances(this.db, { userId: acc.userId }, { accountId: id });
+    return this.present(acc, balances.get(id));
+  }
+
+  async create(ownerId: string, body: CreateAccountBody) {
+    const acc = await this.db.$transaction(async (tx) => {
+      if (body.isDefault) {
+        await tx.account.updateMany({ where: { userId: ownerId }, data: { isDefault: false } });
+      }
+      return tx.account.create({
+        data: {
+          userId: ownerId,
+          name: body.name,
+          type: body.type,
+          openingBalance: numToBig(body.openingBalance ?? 0),
+          color: body.color,
+          icon: body.icon,
+          isDefault: body.isDefault ?? false,
+          includeInDashboard: body.includeInDashboard ?? true,
+          archived: body.archived ?? false,
+        },
+      });
+    });
+    return this.present(acc, {
+      currentBalance: nb(acc.openingBalance),
+      projectedBalance: nb(acc.openingBalance),
+    });
+  }
+
+  async update(scope: Scope, id: string, body: UpdateAccountBody) {
+    const owner = await this.assertOwner(scope, id);
+    const acc = await this.db.$transaction(async (tx) => {
+      if (body.isDefault) {
+        await tx.account.updateMany({
+          where: { userId: owner, id: { not: id } },
+          data: { isDefault: false },
+        });
+      }
+      return tx.account.update({
+        where: { id },
+        data: {
+          name: body.name,
+          type: body.type,
+          openingBalance: body.openingBalance != null ? numToBig(body.openingBalance) : undefined,
+          color: body.color,
+          icon: body.icon,
+          isDefault: body.isDefault,
+          includeInDashboard: body.includeInDashboard,
+          archived: body.archived,
+        },
+      });
+    });
+    const balances = await computeBalances(this.db, { userId: owner }, { accountId: id });
+    return this.present(acc, balances.get(id));
+  }
+
+  async remove(scope: Scope, id: string) {
+    await this.assertOwner(scope, id);
+    const count = await this.db.transaction.count({ where: { accountId: id } });
+    if (count > 0) {
+      await this.db.account.update({ where: { id }, data: { archived: true } });
+      return { archived: true };
+    }
+    await this.db.account.delete({ where: { id } });
+    return { deleted: true };
+  }
+
+  private async assertOwner(scope: Scope, id: string): Promise<string> {
+    const acc = await this.db.account.findFirst({
+      where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
+      select: { userId: true },
+    });
+    if (!acc) throw Errors.notFound('Conta');
+    return acc.userId;
+  }
+
+  private present(a: any, balances?: { currentBalance: number; projectedBalance: number }) {
+    return {
+      id: a.id,
+      name: a.name,
+      type: a.type,
+      openingBalance: nb(a.openingBalance),
+      color: a.color,
+      icon: a.icon,
+      isDefault: a.isDefault,
+      includeInDashboard: a.includeInDashboard,
+      archived: a.archived,
+      createdAt: a.createdAt.toISOString(),
+      currentBalance: balances?.currentBalance ?? nb(a.openingBalance),
+      projectedBalance: balances?.projectedBalance ?? nb(a.openingBalance),
+    };
+  }
+}
