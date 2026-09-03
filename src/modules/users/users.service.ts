@@ -3,6 +3,7 @@ import type { AdminCreateUserBody, AdminUpdateUserBody, ListUsersQuery } from '@
 import { Errors } from '../../lib/errors.js';
 import { hashPassword } from '../../lib/password.js';
 import { invalidateUserAuth } from '../../lib/user-auth-cache.js';
+import { shallowDiff, writeAudit } from '../../lib/audit.js';
 import { seedUserDefaults } from '../auth/seed-defaults.js';
 
 /** CRUD de usuários — todas as rotas exigem role ADMIN. */
@@ -53,7 +54,7 @@ export class UsersService {
     return this.present(u);
   }
 
-  async create(body: AdminCreateUserBody) {
+  async create(body: AdminCreateUserBody, actingAdminId: string) {
     const exists = await this.db.user.findUnique({ where: { email: body.email } });
     if (exists) throw Errors.conflict('E-mail já cadastrado');
 
@@ -70,6 +71,13 @@ export class UsersService {
       });
       await seedUserDefaults(tx, created.id);
       return created;
+    });
+    await writeAudit(this.db, {
+      actorId: actingAdminId,
+      entity: 'user',
+      entityId: user.id,
+      action: 'create',
+      diff: { name: body.name, email: body.email, role: body.role, status: body.status },
     });
     return this.present({ ...user, _count: { accounts: 0, transactions: 0, creditCards: 0 } });
   }
@@ -112,6 +120,19 @@ export class UsersService {
       });
     }
     invalidateUserAuth(id);
+    await writeAudit(this.db, {
+      actorId: actingAdminId,
+      entity: 'user',
+      entityId: id,
+      action: 'update',
+      diff: {
+        ...shallowDiff(
+          { name: target.name, role: target.role, status: target.status },
+          { name: updated.name, role: updated.role, status: updated.status },
+        ),
+        ...(body.password ? { password: { from: '***', to: '*** (redefinida)' } } : {}),
+      },
+    });
     return this.present(updated);
   }
 
@@ -124,6 +145,13 @@ export class UsersService {
       data: { status: 'ACTIVE', approvedAt: new Date(), approvedById: actingAdminId },
     });
     invalidateUserAuth(id);
+    await writeAudit(this.db, {
+      actorId: actingAdminId,
+      entity: 'user',
+      entityId: id,
+      action: 'approve',
+      diff: { status: { from: u.status, to: 'ACTIVE' } },
+    });
     return this.get(id);
   }
 
@@ -139,6 +167,13 @@ export class UsersService {
       data: { revokedAt: new Date() },
     });
     invalidateUserAuth(id);
+    await writeAudit(this.db, {
+      actorId: actingAdminId,
+      entity: 'user',
+      entityId: id,
+      action: 'suspend',
+      diff: { status: { from: u.status, to: 'SUSPENDED' } },
+    });
     return this.get(id);
   }
 
@@ -148,9 +183,36 @@ export class UsersService {
     if (!u) throw Errors.notFound('Usuário');
     if (u.role === 'ADMIN' && u.status === 'ACTIVE') await this.assertNotLastActiveAdmin(id);
 
+    // registra ANTES do delete (o FK de audit_logs.userId aponta para o ator,
+    // não para o alvo — então sobrevive à remoção do alvo).
+    await writeAudit(this.db, {
+      actorId: actingAdminId,
+      entity: 'user',
+      entityId: id,
+      action: 'delete',
+      diff: { name: u.name, email: u.email, role: u.role },
+    });
     await this.db.user.delete({ where: { id } }); // cascade em todos os dados do usuário
     invalidateUserAuth(id);
     return { deleted: true };
+  }
+
+  /** Trilha de auditoria — últimas ações administrativas (só admin). */
+  async listAudit(limit = 100) {
+    const rows = await this.db.auditLog.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(Math.max(limit, 1), 500),
+      include: { user: { select: { name: true, email: true } } },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      actor: r.user ? { name: r.user.name, email: r.user.email } : null,
+      entity: r.entity,
+      entityId: r.entityId,
+      action: r.action,
+      diff: r.diff ?? null,
+      createdAt: r.createdAt.toISOString(),
+    }));
   }
 
   private async assertNotLastActiveAdmin(excludingId: string) {

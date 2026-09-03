@@ -15,3 +15,14 @@ export function hashPassword(plain: string): Promise<string> {
 export function verifyPassword(hash: string, plain: string): Promise<boolean> {
   return argon2.verify(hash, plain).catch(() => false);
 }
+
+/**
+ * Gasta ~o mesmo tempo de um `verifyPassword` real, mas sempre falha. Use no
+ * login quando o e-mail não existe, para o tempo de resposta não revelar se a
+ * conta existe (timing oracle de enumeração de usuários).
+ */
+let dummyHash: Promise<string> | null = null;
+export async function burnPasswordTime(plain: string): Promise<void> {
+  dummyHash ??= hashPassword('nonexistent-user-placeholder-password');
+  await verifyPassword(await dummyHash, plain);
+}

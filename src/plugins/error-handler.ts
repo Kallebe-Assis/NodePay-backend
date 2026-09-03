@@ -50,13 +50,19 @@ export default fp(
       }
 
       request.log.error({ err: error }, 'Erro não tratado');
+      // Chegou aqui = erro não-domínio (framework/lib/bug). Nunca ecoamos a
+      // mensagem crua do erro (pode vazar detalhe interno) — só um texto
+      // genérico por classe de status. Erros de domínio (AppError) já foram
+      // tratados acima com mensagem segura e intencional.
       const status = (error as { statusCode?: number }).statusCode ?? 500;
-      const message = error instanceof Error ? error.message : 'Erro interno';
+      const generic =
+        status >= 500
+          ? 'Erro interno'
+          : status === 429
+            ? 'Muitas requisições. Tente de novo em instantes.'
+            : 'Requisição inválida';
       return reply.status(status).send({
-        error: {
-          code: 'INTERNAL_ERROR',
-          message: status === 500 ? 'Erro interno' : message,
-        },
+        error: { code: status >= 500 ? 'INTERNAL_ERROR' : 'REQUEST_ERROR', message: generic },
       });
     });
   },

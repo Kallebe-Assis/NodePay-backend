@@ -40,6 +40,12 @@ export async function invoiceRoutes(fastify: FastifyInstance) {
   );
 
   app.post(
+    '/:id/reopen',
+    { schema: { tags: ['invoices'], params: z.object({ id: z.string() }), response: { 200: invoiceSchema } } },
+    (req) => svc().reopen(ownerFilter(req), req.params.id),
+  );
+
+  app.post(
     '/:id/pay',
     {
       schema: {

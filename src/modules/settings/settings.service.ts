@@ -40,6 +40,8 @@ export class SettingsService {
       if (t.enabled !== undefined) data.telegramEnabled = t.enabled;
       if (t.dailyDigest !== undefined) data.telegramDailyDigest = t.dailyDigest;
       if (t.digestHour !== undefined) data.telegramDigestHour = t.digestHour;
+      if (t.botToken) data.telegramBotTokenEnc = encryptSecret(t.botToken.trim());
+      if (t.chatId !== undefined) data.telegramChatId = t.chatId.trim() || null;
     }
 
     if (body.notifications) {
@@ -88,6 +90,8 @@ export class SettingsService {
       telegram: {
         enabled: s.telegramEnabled,
         linked: Boolean(s.telegramChatId),
+        botTokenConfigured: Boolean(s.telegramBotTokenEnc),
+        chatId: s.telegramChatId,
         dailyDigest: s.telegramDailyDigest,
         digestHour: s.telegramDigestHour,
         linkToken: s.telegramLinkToken,

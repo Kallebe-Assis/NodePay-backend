@@ -3,12 +3,16 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
   createTransactionBodySchema,
+  importCommitResponseSchema,
+  importPreviewBodySchema,
+  importPreviewResponseSchema,
   listTransactionsQuerySchema,
   markPaidBodySchema,
   transactionSchema,
   updateTransactionBodySchema,
 } from '@nodepay/shared';
 import { TransactionsService } from './transactions.service.js';
+import { commitImport, importTemplateCsv, previewImport } from './import.service.js';
 import { ownerFilter, targetOwnerId } from '../../lib/scope.js';
 
 const createResultSchema = z.object({
@@ -106,5 +110,37 @@ export async function transactionRoutes(fastify: FastifyInstance) {
       },
     },
     (req) => svc().remove(ownerFilter(req), req.params.id, req.query.scope),
+  );
+
+  // ---- Importação em massa por CSV (limite 50) ----
+  app.get('/import/template', { schema: { tags: ['transactions'] } }, async (_req, reply) => {
+    reply
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', 'attachment; filename="modelo-lancamentos.csv"')
+      .send(importTemplateCsv());
+  });
+
+  app.post(
+    '/import/preview',
+    {
+      schema: {
+        tags: ['transactions'],
+        body: importPreviewBodySchema,
+        response: { 200: importPreviewResponseSchema },
+      },
+    },
+    (req) => previewImport(app.db(), targetOwnerId(req), req.body.csv),
+  );
+
+  app.post(
+    '/import/commit',
+    {
+      schema: {
+        tags: ['transactions'],
+        body: importPreviewBodySchema,
+        response: { 200: importCommitResponseSchema },
+      },
+    },
+    (req) => commitImport(app.db(), targetOwnerId(req), req.body.csv),
   );
 }

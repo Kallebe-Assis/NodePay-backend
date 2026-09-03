@@ -57,6 +57,20 @@ export class InvoicesService {
     return this.present(updated);
   }
 
+  /** Reabre uma fatura FECHADA (não paga) — volta para OPEN. */
+  async reopen(scope: { userId?: string }, id: string) {
+    const inv = await this.db.invoice.findFirst({
+      where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
+    });
+    if (!inv) throw Errors.notFound('Fatura');
+    if (inv.status === 'PAID') {
+      throw Errors.badRequest('Fatura já foi paga — estorne o pagamento antes de reabrir.');
+    }
+    if (inv.status !== 'CLOSED') throw Errors.badRequest('Só é possível reabrir uma fatura fechada.');
+    const updated = await this.db.invoice.update({ where: { id }, data: { status: 'OPEN' } });
+    return this.present(updated);
+  }
+
   /** Paga a fatura: gera um lançamento INVOICE_PAYMENT na conta escolhida. */
   async pay(scope: { userId?: string }, id: string, body: PayInvoiceBody) {
     return this.db.$transaction(async (tx) => {

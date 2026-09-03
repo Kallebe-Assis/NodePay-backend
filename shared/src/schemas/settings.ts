@@ -21,6 +21,10 @@ export const telegramSettingsInputSchema = z.object({
   enabled: z.boolean(),
   dailyDigest: z.boolean().default(false),
   digestHour: z.number().int().min(0).max(23).default(8),
+  /** token do bot — write-only (sobrepõe o TELEGRAM_BOT_TOKEN do ambiente) */
+  botToken: z.string().max(200).optional(),
+  /** ID do chat — OPCIONAL; alternativa ao pareamento via /vincular */
+  chatId: z.string().max(60).optional(),
 });
 export type TelegramSettingsInput = z.infer<typeof telegramSettingsInputSchema>;
 
@@ -63,6 +67,8 @@ export const settingsSchema = z.object({
   telegram: z.object({
     enabled: z.boolean(),
     linked: z.boolean(),
+    botTokenConfigured: z.boolean(),
+    chatId: z.string().nullable(),
     dailyDigest: z.boolean(),
     digestHour: z.number().int(),
     /** token de uso único para o usuário parear o chat no bot */

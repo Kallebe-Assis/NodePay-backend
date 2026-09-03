@@ -31,6 +31,7 @@ import { settingsRoutes } from './modules/settings/settings.routes.js';
 import { notificationRoutes } from './modules/notifications/notifications.routes.js';
 import { goalRoutes } from './modules/goals/goals.routes.js';
 import { calendarRoutes } from './modules/calendar/calendar.routes.js';
+import { cronRoutes } from './modules/jobs/cron.routes.js';
 
 export async function buildApp(): Promise<AppInstance> {
   const app = Fastify({
@@ -56,7 +57,9 @@ export async function buildApp(): Promise<AppInstance> {
   //  - um curinga, ex.: https://*.vercel.app  (cobre os deploys de preview)
   //  - "*" para liberar qualquer origem
   const corsOrigins = parseCorsOrigins(env.WEB_ORIGIN);
-  await app.register(cors, { origin: corsOrigins, credentials: true });
+  // Sem `credentials: true`: a auth é por header Authorization (Bearer), não por
+  // cookie. Habilitar credenciais junto de origens curinga seria folga sem uso.
+  await app.register(cors, { origin: corsOrigins });
   app.log.info(
     { corsOrigins: corsOrigins === true ? '*' : corsOrigins.map(String) },
     'CORS configurado',
@@ -87,6 +90,7 @@ export async function buildApp(): Promise<AppInstance> {
       await api.register(reportRoutes, { prefix: '/reports' });
       await api.register(settingsRoutes, { prefix: '/settings' });
       await api.register(notificationRoutes, { prefix: '/notifications' });
+      await api.register(cronRoutes, { prefix: '/internal' });
     },
     { prefix: '/api/v1' },
   );

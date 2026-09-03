@@ -26,6 +26,7 @@ export class DashboardService {
           amount: true,
           status: true,
           dueDate: true,
+          paidDate: true,
           categoryId: true,
           recurrenceId: true,
           loanId: true,
@@ -73,20 +74,33 @@ export class DashboardService {
 
     const totalCurrent = [...balances.values()].reduce((s, b) => s + b.currentBalance, 0);
 
-    // projeção diária do mês (usa tudo — inclusive pendentes — pelo vencimento)
+    // ---- projeção do saldo dia a dia ----
+    // Data efetiva do movimento: pagamento (se já liquidado até hoje) senão vencimento.
+    const effDate = (t: (typeof txns)[number]) =>
+      t.paidDate && dbDateToIso(t.paidDate) <= today ? dbDateToIso(t.paidDate) : dbDateToIso(t.dueDate);
+    const signedOf = (t: (typeof txns)[number]) => {
+      const amt = nb(t.amount);
+      return IN.includes(t.type) ? amt : OUT.includes(t.type) ? -amt : 0;
+    };
+
     const dailyDelta = new Map<string, number>();
     for (const t of txns) {
-      const d = dbDateToIso(t.dueDate);
-      const amt = nb(t.amount);
-      const signed = IN.includes(t.type) ? amt : OUT.includes(t.type) ? -amt : 0;
-      dailyDelta.set(d, (dailyDelta.get(d) ?? 0) + signed);
+      dailyDelta.set(effDate(t), (dailyDelta.get(effDate(t)) ?? 0) + signedOf(t));
     }
+
+    // `totalCurrent` já contém os movimentos do mês liquidados até hoje. Para a
+    // linha começar do saldo do INÍCIO do mês (e não somar duas vezes), tiramos
+    // esses movimentos e o loop os recoloca no dia certo.
+    const realizedInMonthNet = txns
+      .filter((t) => t.paidDate && dbDateToIso(t.paidDate) <= today && effDate(t) >= from)
+      .reduce((s, t) => s + signedOf(t), 0);
+
     const cashflow = [];
-    let running = totalCurrent;
+    let running = totalCurrent - realizedInMonthNet;
     for (let d: IsoDate = from; d <= to; d = addDays(d, 1)) {
       const delta = dailyDelta.get(d) ?? 0;
       running += delta;
-      const dayTx = txns.filter((t) => dbDateToIso(t.dueDate) === d);
+      const dayTx = txns.filter((t) => effDate(t) === d);
       cashflow.push({
         date: d,
         income: dayTx.filter((t) => IN.includes(t.type)).reduce((s, t) => s + nb(t.amount), 0),

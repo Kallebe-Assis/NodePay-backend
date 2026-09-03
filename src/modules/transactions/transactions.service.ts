@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient, TransactionType } from '@prisma/client';
 import {
   addMonths,
   type AccountEntryBody,
@@ -199,7 +199,9 @@ export class TransactionsService {
               body.installments > 1
                 ? `${body.description} (${i + 1}/${body.installments})`
                 : body.description,
-            competenceDate: isoToDbDate(body.purchaseDate),
+            // A parcela "conta" no mês em que a fatura vence (não no mês da compra),
+            // para aparecer no mês certo nas listas e no dashboard.
+            competenceDate: invoice.dueDate,
             dueDate: invoice.dueDate,
             paidDate: null,
             status: 'PENDING',
@@ -248,8 +250,13 @@ export class TransactionsService {
   // READ
   // ---------------------------------------------------------------------------
   async list(scope: { userId?: string }, q: ListTransactionsQuery) {
-    const EXPENSE_FLOW = ['EXPENSE', 'CARD_EXPENSE', 'INVOICE_PAYMENT', 'LOAN_INSTALLMENT'];
-    const INCOME_FLOW = ['INCOME', 'LOAN_DISBURSEMENT'];
+    const EXPENSE_FLOW: TransactionType[] = [
+      'EXPENSE',
+      'CARD_EXPENSE',
+      'INVOICE_PAYMENT',
+      'LOAN_INSTALLMENT',
+    ];
+    const INCOME_FLOW: TransactionType[] = ['INCOME', 'LOAN_DISBURSEMENT'];
 
     // categoria: subcategoria específica > categoria-pai (inclui filhas)
     let categoryFilter: Prisma.TransactionWhereInput = {};
@@ -269,9 +276,9 @@ export class TransactionsService {
       ...(q.type
         ? { type: q.type }
         : q.flow === 'expense'
-          ? { type: { in: EXPENSE_FLOW as never[] } }
+          ? { type: { in: EXPENSE_FLOW } }
           : q.flow === 'income'
-            ? { type: { in: INCOME_FLOW as never[] } }
+            ? { type: { in: INCOME_FLOW } }
             : // livro-razão comum não mostra transferências (elas têm tela própria);
               // o saldo das contas já é ajustado por computeBalances.
               { type: { not: 'TRANSFER' } }),

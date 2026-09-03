@@ -7,7 +7,7 @@ export interface AccountBalances {
   projectedBalance: number;
 }
 
-type BalRow = {
+export type BalRow = {
   accountId: string | null;
   transferToAccountId: string | null;
   type: string;
@@ -61,7 +61,13 @@ export async function computeBalances(
         select: { id: true, openingBalance: true },
       }),
       db.transaction.findMany({
-        where: { userId: scope.userId, status: { not: 'CANCELED' } },
+        // só lançamentos que tocam alguma conta (exclui compras de cartão ainda
+        // não pagas, que não afetam saldo) — poupa varrer linhas irrelevantes.
+        where: {
+          userId: scope.userId,
+          status: { not: 'CANCELED' },
+          OR: [{ accountId: { not: null } }, { transferToAccountId: { not: null } }],
+        },
         select: TX_SELECT,
       }),
     ]);
@@ -86,7 +92,7 @@ export async function computeBalances(
 }
 
 /** Soma os lançamentos por conta (em memória) e devolve saldo atual + projetado. */
-function aggregate(
+export function aggregate(
   accounts: { id: string; openingBalance: bigint }[],
   rows: BalRow[],
   today: Date,

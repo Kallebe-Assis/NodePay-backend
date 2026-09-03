@@ -153,3 +153,49 @@ export interface InstallmentPreviewRow {
   amount: number; // centavos
   date: string; // YYYY-MM-DD
 }
+
+/* ---------------------------------------------------------------------------
+ * Importação em massa de lançamentos por CSV (limite: 50 por importação)
+ * ------------------------------------------------------------------------- */
+export const IMPORT_MAX_ROWS = 50;
+
+/** Cabeçalhos do modelo CSV (nesta ordem). */
+export const IMPORT_CSV_HEADERS = [
+  'data',
+  'tipo',
+  'descricao',
+  'valor',
+  'conta',
+  'categoria',
+  'pago',
+] as const;
+
+/** Uma linha já analisada e validada pelo servidor. */
+export const importRowSchema = z.object({
+  line: z.number().int(),
+  ok: z.boolean(),
+  error: z.string().nullable(),
+  /** valores normalizados (quando `ok`) */
+  date: z.string(),
+  direction: z.enum(['expense', 'income']),
+  description: z.string(),
+  amount: z.number().int(), // centavos
+  accountName: z.string(),
+  categoryName: z.string().nullable(),
+  paid: z.boolean(),
+});
+export type ImportRow = z.infer<typeof importRowSchema>;
+
+export const importPreviewBodySchema = z.object({ csv: z.string().min(1).max(200_000) });
+export type ImportPreviewBody = z.infer<typeof importPreviewBodySchema>;
+
+export const importPreviewResponseSchema = z.object({
+  rows: z.array(importRowSchema),
+  total: z.number().int(),
+  valid: z.number().int(),
+  invalid: z.number().int(),
+});
+export type ImportPreviewResponse = z.infer<typeof importPreviewResponseSchema>;
+
+export const importCommitResponseSchema = z.object({ created: z.number().int() });
+export type ImportCommitResponse = z.infer<typeof importCommitResponseSchema>;

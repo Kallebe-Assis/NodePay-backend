@@ -35,6 +35,30 @@ export async function userRoutes(fastify: FastifyInstance) {
   );
 
   app.get(
+    '/audit',
+    {
+      schema: {
+        tags: ['users'],
+        querystring: z.object({ limit: z.coerce.number().int().min(1).max(500).default(100) }),
+        response: {
+          200: z.array(
+            z.object({
+              id: z.string(),
+              actor: z.object({ name: z.string(), email: z.string() }).nullable(),
+              entity: z.string(),
+              entityId: z.string(),
+              action: z.string(),
+              diff: z.unknown().nullable(),
+              createdAt: z.string(),
+            }),
+          ),
+        },
+      },
+    },
+    (req) => svc().listAudit(req.query.limit),
+  );
+
+  app.get(
     '/:id',
     { schema: { tags: ['users'], params: z.object({ id: z.string() }), response: { 200: userSchema } } },
     (req) => svc().get(req.params.id),
@@ -43,7 +67,7 @@ export async function userRoutes(fastify: FastifyInstance) {
   app.post(
     '/',
     { schema: { tags: ['users'], body: adminCreateUserBodySchema, response: { 201: userSchema } } },
-    async (req, reply) => reply.code(201).send(await svc().create(req.body)),
+    async (req, reply) => reply.code(201).send(await svc().create(req.body, req.userId)),
   );
 
   app.patch(

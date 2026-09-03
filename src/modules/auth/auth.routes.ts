@@ -19,9 +19,14 @@ export async function authRoutes(fastify: FastifyInstance) {
   const meta = (req: any) => ({ ip: req.ip, userAgent: req.headers['user-agent'] });
   const svc = () => new AuthService(app, app.db());
 
+  // Limites por rota, mais apertados que o global (300/min), contra
+  // força-bruta de senha e criação de contas em massa. Chave = IP.
+  const limit = (max: number, timeWindow: string) => ({ config: { rateLimit: { max, timeWindow } } });
+
   app.post(
     '/register',
     {
+      ...limit(8, '10 minutes'),
       schema: {
         tags: ['auth'],
         body: registerBodySchema,
@@ -36,13 +41,19 @@ export async function authRoutes(fastify: FastifyInstance) {
 
   app.post(
     '/login',
-    { schema: { tags: ['auth'], body: loginBodySchema, response: { 200: authResponseSchema } } },
+    {
+      ...limit(10, '5 minutes'),
+      schema: { tags: ['auth'], body: loginBodySchema, response: { 200: authResponseSchema } },
+    },
     async (req) => svc().login(req.body, meta(req)),
   );
 
   app.post(
     '/refresh',
-    { schema: { tags: ['auth'], body: refreshBodySchema, response: { 200: authResponseSchema } } },
+    {
+      ...limit(60, '5 minutes'),
+      schema: { tags: ['auth'], body: refreshBodySchema, response: { 200: authResponseSchema } },
+    },
     async (req) => svc().refresh(req.body.refreshToken, meta(req)),
   );
 
@@ -73,11 +84,22 @@ export async function authRoutes(fastify: FastifyInstance) {
   app.post(
     '/change-password',
     {
+      ...limit(10, '10 minutes'),
       preHandler: app.authenticate,
       schema: { tags: ['auth'], body: changePasswordBodySchema },
     },
     async (req, reply) => {
       await svc().changePassword(req.userId, req.body.currentPassword, req.body.newPassword);
+      return reply.code(204).send();
+    },
+  );
+
+  // "Excluir minha conta" (soft: desativa o login)
+  app.delete(
+    '/me',
+    { preHandler: app.authenticate, schema: { tags: ['auth'] } },
+    async (req, reply) => {
+      await svc().deleteOwnAccount(req.userId);
       return reply.code(204).send();
     },
   );

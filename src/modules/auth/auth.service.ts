@@ -3,8 +3,10 @@ import type { PrismaClient } from '@prisma/client';
 import { type LoginBody, type RegisterBody } from '@nodepay/shared';
 import { env } from '../../config/env.js';
 import { Errors } from '../../lib/errors.js';
-import { hashPassword, verifyPassword } from '../../lib/password.js';
+import { burnPasswordTime, hashPassword, verifyPassword } from '../../lib/password.js';
 import { randomToken, sha256 } from '../../lib/crypto.js';
+import { invalidateUserAuth } from '../../lib/user-auth-cache.js';
+import { writeAudit } from '../../lib/audit.js';
 import { seedUserDefaults } from './seed-defaults.js';
 
 function ttlToMs(ttl: string): number {
@@ -27,7 +29,7 @@ export class AuthService {
   ) {
     const accessToken = this.app.jwt.sign({ sub: userId, type: 'access', role });
     const refreshToken = randomToken(48);
-    await this.db.session.create({
+    const session = await this.db.session.create({
       data: {
         userId,
         tokenHash: sha256(refreshToken),
@@ -36,7 +38,22 @@ export class AuthService {
         expiresAt: new Date(Date.now() + ttlToMs(env.JWT_REFRESH_TTL)),
       },
     });
-    return { accessToken, refreshToken, expiresIn: Math.floor(ttlToMs(env.JWT_ACCESS_TTL) / 1000) };
+    return {
+      sessionId: session.id,
+      tokens: {
+        accessToken,
+        refreshToken,
+        expiresIn: Math.floor(ttlToMs(env.JWT_ACCESS_TTL) / 1000),
+      },
+    };
+  }
+
+  /** Encerra todas as sessões vivas de um usuário (ex.: reuso de refresh token). */
+  private async revokeAllSessions(userId: string) {
+    await this.db.session.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
   }
 
   private seedUserDefaults(userId: string) {
@@ -73,13 +90,18 @@ export class AuthService {
       };
     }
 
-    const tokens = await this.issueTokens(user.id, user.role, meta);
+    const { tokens } = await this.issueTokens(user.id, user.role, meta);
     return { pending: false as const, result: { user: this.publicUser(user), tokens } };
   }
 
   async login(body: LoginBody, meta: { ip?: string; userAgent?: string }) {
     const user = await this.db.user.findUnique({ where: { email: body.email } });
-    if (!user || !(await verifyPassword(user.passwordHash, body.password))) {
+    if (!user) {
+      // sem conta: gasta o mesmo tempo de um verify real p/ não vazar existência
+      await burnPasswordTime(body.password);
+      throw Errors.unauthorized('E-mail ou senha inválidos');
+    }
+    if (!(await verifyPassword(user.passwordHash, body.password))) {
       throw Errors.unauthorized('E-mail ou senha inválidos');
     }
     if (user.status === 'PENDING') {
@@ -88,21 +110,42 @@ export class AuthService {
     if (user.status === 'SUSPENDED') {
       throw Errors.forbidden('Conta suspensa. Fale com um administrador.');
     }
-    const tokens = await this.issueTokens(user.id, user.role, meta);
+    const { tokens } = await this.issueTokens(user.id, user.role, meta);
     return { user: this.publicUser(user), tokens };
   }
 
   async refresh(refreshToken: string, meta: { ip?: string; userAgent?: string }) {
     const hash = sha256(refreshToken);
     const session = await this.db.session.findUnique({ where: { tokenHash: hash } });
-    if (!session || session.revokedAt || session.expiresAt < new Date()) {
+    if (!session || session.expiresAt < new Date()) {
       throw Errors.unauthorized('Sessão inválida ou expirada');
     }
-    // rotação: revoga a atual e emite outra
-    await this.db.session.update({ where: { id: session.id }, data: { revokedAt: new Date() } });
+    // Já revogada. Se foi por ROTAÇÃO (replacedById preenchido) e alguém está
+    // reapresentando o token antigo, é sinal clássico de token roubado/replay:
+    // derruba TODAS as sessões vivas do usuário.
+    if (session.revokedAt) {
+      if (session.replacedById) {
+        await this.revokeAllSessions(session.userId);
+        await writeAudit(this.db, {
+          actorId: session.userId,
+          entity: 'session',
+          entityId: session.id,
+          action: 'refresh-reuse-detected',
+          diff: { ip: meta.ip ?? null },
+        });
+      }
+      throw Errors.unauthorized('Sessão inválida ou expirada');
+    }
+
     const user = await this.db.user.findUniqueOrThrow({ where: { id: session.userId } });
     if (user.status !== 'ACTIVE') throw Errors.forbidden('Conta inativa');
-    const tokens = await this.issueTokens(user.id, user.role, meta);
+
+    // rotação: emite a nova e marca a atual como substituída por ela
+    const { sessionId, tokens } = await this.issueTokens(user.id, user.role, meta);
+    await this.db.session.update({
+      where: { id: session.id },
+      data: { revokedAt: new Date(), replacedById: sessionId },
+    });
     return { user: this.publicUser(user), tokens };
   }
 
@@ -136,6 +179,43 @@ export class AuthService {
     await this.db.session.updateMany({
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
+    });
+  }
+
+  /**
+   * "Excluir minha conta" — na prática desativa o login (status SUSPENDED) e
+   * encerra as sessões. Não expõe ao usuário que é reversível.
+   *
+   * O e-mail original é liberado (renomeado para `deleted+<ts>_<email>`) para
+   * que a pessoa possa se recadastrar depois. Um admin pode restaurar a conta
+   * revertendo o e-mail e o status pela tela de usuários.
+   */
+  async deleteOwnAccount(userId: string) {
+    const user = await this.db.user.findUniqueOrThrow({ where: { id: userId } });
+    if (user.role === 'ADMIN' && user.status === 'ACTIVE') {
+      const otherAdmins = await this.db.user.count({
+        where: { role: 'ADMIN', status: 'ACTIVE', id: { not: userId } },
+      });
+      if (otherAdmins === 0) {
+        throw Errors.badRequest('Não é possível excluir a única conta de administrador ativa.');
+      }
+    }
+    const freedEmail = `deleted+${Date.now()}_${user.email}`.slice(0, 250);
+    await this.db.user.update({
+      where: { id: userId },
+      data: { status: 'SUSPENDED', email: freedEmail },
+    });
+    await this.db.session.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    invalidateUserAuth(userId);
+    await writeAudit(this.db, {
+      actorId: userId,
+      entity: 'user',
+      entityId: userId,
+      action: 'self-delete',
+      diff: { email: { from: user.email, to: freedEmail } },
     });
   }
 

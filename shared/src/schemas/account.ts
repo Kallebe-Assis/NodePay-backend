@@ -12,6 +12,8 @@ export const createAccountBodySchema = z.object({
     .regex(/^#[0-9a-fA-F]{6}$/)
     .optional(),
   icon: z.string().max(40).optional(),
+  /** id do banco (paleta BANKS) para exibir a logo */
+  bankId: z.string().max(40).optional(),
   /** conta pré-selecionada nos formulários (só uma fica ativa por usuário) */
   isDefault: z.boolean().optional(),
   /** entra nos totais e gráficos do dashboard */
@@ -30,6 +32,7 @@ export const accountSchema = z.object({
   openingBalance: z.number().int(),
   color: z.string().nullable(),
   icon: z.string().nullable(),
+  bankId: z.string().nullable(),
   isDefault: z.boolean(),
   includeInDashboard: z.boolean(),
   archived: z.boolean(),

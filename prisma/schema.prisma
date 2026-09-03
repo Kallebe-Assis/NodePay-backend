@@ -150,6 +150,10 @@ model Session {
   ip         String?
   expiresAt  DateTime
   revokedAt  DateTime?
+  /// id da sessão que substituiu esta numa rotação de refresh token.
+  /// Se um token já revogado COM este campo preenchido for reapresentado,
+  /// tratamos como reuso (token roubado) e derrubamos todas as sessões.
+  replacedById String?
   createdAt  DateTime @default(now())
 
   @@index([userId])
@@ -168,6 +172,7 @@ model Account {
   openingBalance     BigInt      @default(0)
   color              String?
   icon               String?
+  bankId             String?
   /// conta pré-selecionada nos formulários (uma por usuário)
   isDefault          Boolean     @default(false)
   /// entra nos totais e gráficos do dashboard
@@ -484,6 +489,8 @@ model UserSettings {
   telegramEnabled     Boolean  @default(false)
   telegramChatId      String?
   telegramLinkToken   String?  @unique
+  /// token do bot criptografado (opcional; senão usa env TELEGRAM_BOT_TOKEN)
+  telegramBotTokenEnc String?
   telegramDailyDigest Boolean  @default(false)
   telegramDigestHour  Int      @default(8)
 
