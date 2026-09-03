@@ -43,12 +43,32 @@ npm start                 # node dist/main.js
 | **Pre-Deploy Command** | `npm run db:deploy` *(opcional, aplica migrações)* |
 | **Environment** | Node · versão pelo `.nvmrc` (22) |
 
-Variáveis de ambiente (a partir de `.env.example`): `DATABASE_URL` (com pooler,
-`?pgbouncer=true&connection_limit=1`), `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`,
-`SECRETS_ENCRYPTION_KEY`, `WEB_ORIGIN` (= URL do front), `NODE_ENV=production`.
-Health check path: `/health`.
+Variáveis de ambiente **obrigatórias** (as demais têm default no `config/env.ts`):
 
-Railway/Fly seguem a mesma ideia (build = `npm run build`, start = `npm start`).
+| Var | Valor |
+|---|---|
+| `NODE_ENV` | `production` |
+| `DATABASE_URL` | connection string do Postgres — ver Supabase abaixo |
+| `WEB_ORIGIN` | `https://nodepay-sync.vercel.app` |
+| `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` | 48 bytes base64url cada |
+| `SECRETS_ENCRYPTION_KEY` | 32 bytes base64url (não trocar depois) |
+
+**Não** defina `PORT`/`API_PORT` — o Render injeta `PORT` e o app usa ele.
+Health check path: `/health`. Railway/Fly seguem a mesma ideia.
+
+### Banco no Supabase
+
+Pegue a string em **Project Settings → Database → Connection string**:
+
+- **Session pooler** (porta `5432`) — use esta no Render (serve p/ runtime **e**
+  migrações): `postgresql://postgres.<ref>:SENHA@aws-0-<regiao>.pooler.supabase.com:5432/postgres`
+- **Transaction pooler** (porta `6543`, `?pgbouncer=true`) — só para serverless.
+- **Direta** (`db.<ref>.supabase.co:5432`) — funciona da sua máquina (pode ser
+  IPv6-only), boa para rodar `npm run db:deploy` / `npm run db:seed` localmente.
+
+As migrações já foram aplicadas neste banco (`npm run db:deploy`). O banco
+começa **vazio** — o primeiro usuário que se registrar no app vira **ADMIN**
+automaticamente (não rode `db:seed` em produção, senão o admin será o `demo`).
 
 ## Código compartilhado
 
