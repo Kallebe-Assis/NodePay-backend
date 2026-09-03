@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { AdminCreateUserBody, AdminUpdateUserBody, ListUsersQuery } from '@nodepay/shared';
 import { Errors } from '../../lib/errors.js';
 import { hashPassword } from '../../lib/password.js';
+import { invalidateUserAuth } from '../../lib/user-auth-cache.js';
 import { seedUserDefaults } from '../auth/seed-defaults.js';
 
 /** CRUD de usuários — todas as rotas exigem role ADMIN. */
@@ -110,6 +111,7 @@ export class UsersService {
         data: { revokedAt: new Date() },
       });
     }
+    invalidateUserAuth(id);
     return this.present(updated);
   }
 
@@ -121,6 +123,7 @@ export class UsersService {
       where: { id },
       data: { status: 'ACTIVE', approvedAt: new Date(), approvedById: actingAdminId },
     });
+    invalidateUserAuth(id);
     return this.get(id);
   }
 
@@ -135,6 +138,7 @@ export class UsersService {
       where: { userId: id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    invalidateUserAuth(id);
     return this.get(id);
   }
 
@@ -145,6 +149,7 @@ export class UsersService {
     if (u.role === 'ADMIN' && u.status === 'ACTIVE') await this.assertNotLastActiveAdmin(id);
 
     await this.db.user.delete({ where: { id } }); // cascade em todos os dados do usuário
+    invalidateUserAuth(id);
     return { deleted: true };
   }
 

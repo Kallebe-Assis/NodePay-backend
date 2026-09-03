@@ -3,6 +3,7 @@ import jwt from '@fastify/jwt';
 import { env } from '../config/env.js';
 import { Errors } from '../lib/errors.js';
 import { prisma } from '../lib/prisma.js';
+import { getUserAuth } from '../lib/user-auth-cache.js';
 
 /**
  * Registra @fastify/jwt e adiciona os preHandlers:
@@ -28,12 +29,10 @@ export default fp(
       }
       if (payload.type !== 'access') throw Errors.unauthorized();
 
-      // revalida status/role no banco (barato: PK lookup)
+      // revalida status/role — servido de um cache curto (ver user-auth-cache.ts)
+      // para não custar 1 SELECT em cada requisição.
       if (prisma) {
-        const user = await prisma.user.findUnique({
-          where: { id: payload.sub },
-          select: { status: true, role: true },
-        });
+        const user = await getUserAuth(prisma, payload.sub);
         if (!user) throw Errors.unauthorized();
         if (user.status === 'SUSPENDED') throw Errors.forbidden('Conta suspensa');
         if (user.status === 'PENDING') throw Errors.forbidden('Conta aguardando aprovação');

@@ -124,12 +124,28 @@ Em serverless, troque por `@sparticuz/chromium`.
 
 ## Deploy — pontos de atenção
 
-- **CORS**: `WEB_ORIGIN` = URL pública do front.
-- **Prisma + pooler**: em Postgres gerenciado use a connection string com
-  `?pgbouncer=true&connection_limit=1`.
+- **CORS**: `WEB_ORIGIN` = URL pública do front (aceita `*` e `https://*.vercel.app`).
 - **Jobs (`pg-boss`) e bot do Telegram (long-polling)** precisam de **processo
   contínuo** — não rodam em funções serverless sem adaptação (cron + webhook).
 - **Backup** usa o binário `pg_dump` no PATH.
+
+## Desempenho / latência
+
+O que mais pesa num deploy é a **distância entre o servidor e o banco**: cada
+ida ao Postgres custa o *round-trip* de rede. Local ≈ 0 ms; Render(EUA) →
+Supabase(`sa-east-1`) ≈ 100–180 ms **por query**.
+
+- **Co-localize.** O ideal é o backend na mesma região do banco. O **Fly.io tem
+  a região `gru` (São Paulo)** — junto do Supabase `sa-east-1`, volta a ~5 ms.
+  No Render, a região mais perto é **Virginia** (~110 ms); evite Oregon (~180 ms).
+- **Menos queries por request** (já feito no código):
+  - o `status/role` do usuário é servido de um cache de ~20 s
+    (`lib/user-auth-cache.ts`, `AUTH_CACHE_TTL_MS`) — antes era 1 `SELECT` por request;
+  - `computeBalances` faz **1 ida** (escopo de 1 usuário) em vez de 9;
+  - `/notifications` dispara as consultas em paralelo, não em série.
+- **Pool**: para o Session pooler do Supabase, acrescente
+  `?connection_limit=10&pool_timeout=20` na `DATABASE_URL`. (`?pgbouncer=true` só
+  no Transaction pooler / serverless.)
 
 ## Testes
 
