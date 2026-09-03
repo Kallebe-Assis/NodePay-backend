@@ -56,19 +56,27 @@ Variáveis de ambiente **obrigatórias** (as demais têm default no `config/env.
 **Não** defina `PORT`/`API_PORT` — o Render injeta `PORT` e o app usa ele.
 Health check path: `/health`. Railway/Fly seguem a mesma ideia.
 
-### Banco no Supabase
+### Banco no Supabase (ref `fbffwzpfnwfzvovwxoll`, `sa-east-1`)
 
-Pegue a string em **Project Settings → Database → Connection string**:
+**`DATABASE_URL` no Render** (Session pooler, porta 5432 — serve p/ runtime **e**
+migrações; testado):
 
-- **Session pooler** (porta `5432`) — use esta no Render (serve p/ runtime **e**
-  migrações): `postgresql://postgres.<ref>:SENHA@aws-0-<regiao>.pooler.supabase.com:5432/postgres`
-- **Transaction pooler** (porta `6543`, `?pgbouncer=true`) — só para serverless.
-- **Direta** (`db.<ref>.supabase.co:5432`) — funciona da sua máquina (pode ser
-  IPv6-only), boa para rodar `npm run db:deploy` / `npm run db:seed` localmente.
+```
+postgresql://postgres.fbffwzpfnwfzvovwxoll:SUA_SENHA@aws-0-sa-east-1.pooler.supabase.com:5432/postgres
+```
 
-As migrações já foram aplicadas neste banco (`npm run db:deploy`). O banco
+- **Transaction pooler** (`:6543/...?pgbouncer=true`) — só serverless.
+- **Direta** (`db.<ref>.supabase.co:5432`) — IPv6-only, **não** funciona no
+  Render; use só localmente.
+- Erro **`P1013` "invalid domain character"** = a string tem `< > [ ]` (placeholder
+  não substituído) ou espaço/quebra de linha. Cole a string **sem** os colchetes.
+
+As migrações já foram aplicadas (`npm run db:deploy`, 15 tabelas). O banco
 começa **vazio** — o primeiro usuário que se registrar no app vira **ADMIN**
 automaticamente (não rode `db:seed` em produção, senão o admin será o `demo`).
+
+> As chaves `SUPABASE_URL` / `SUPABASE_*_KEY` / JWKS **não são usadas** — o
+> NodePay fala com o Postgres direto (Prisma), não com a API REST do Supabase.
 
 ## Código compartilhado
 
