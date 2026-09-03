@@ -50,10 +50,18 @@ export async function buildApp(): Promise<AppInstance> {
   // ---- plataforma ----
   await app.register(sensible);
   await app.register(helmet, { contentSecurityPolicy: isProd ? undefined : false });
-  await app.register(cors, {
-    origin: env.WEB_ORIGIN.split(',').map((s) => s.trim()),
-    credentials: true,
-  });
+
+  // CORS: WEB_ORIGIN é uma lista separada por vírgula. Cada item pode ser:
+  //  - uma origem exata (barra final é ignorada)
+  //  - um curinga, ex.: https://*.vercel.app  (cobre os deploys de preview)
+  //  - "*" para liberar qualquer origem
+  const corsOrigins = parseCorsOrigins(env.WEB_ORIGIN);
+  await app.register(cors, { origin: corsOrigins, credentials: true });
+  app.log.info(
+    { corsOrigins: corsOrigins === true ? '*' : corsOrigins.map(String) },
+    'CORS configurado',
+  );
+
   await app.register(rateLimit, { max: 300, timeWindow: '1 minute' });
   await app.register(errorHandler);
   await app.register(prismaPlugin);
@@ -84,4 +92,29 @@ export async function buildApp(): Promise<AppInstance> {
   );
 
   return app;
+}
+
+/** Escapa os metacaracteres de regex de um trecho literal. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Converte a lista `WEB_ORIGIN` em algo que o `@fastify/cors` entende.
+ * `*` -> libera tudo; item com `*` -> vira RegExp; senão, string exata
+ * (sem a barra final).
+ */
+function parseCorsOrigins(raw: string): true | (string | RegExp)[] {
+  const entries = raw
+    .split(',')
+    .map((s) => s.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+
+  if (entries.includes('*')) return true;
+
+  return entries.map((e) =>
+    e.includes('*')
+      ? new RegExp('^' + e.split('*').map(escapeRegex).join('.*') + '$')
+      : e,
+  );
 }
