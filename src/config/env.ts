@@ -57,6 +57,12 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-export const env = parsed.data;
+export const env = {
+  ...parsed.data,
+  // Plataformas de deploy (Render, Railway, Fly, Heroku…) injetam a porta em
+  // `PORT` dinamicamente e esperam que o app escute nela. `PORT` tem prioridade
+  // sobre `API_PORT`.
+  API_PORT: process.env.PORT ? Number(process.env.PORT) : parsed.data.API_PORT,
+};
 export const isDbConfigured = env.DATABASE_URL.trim().length > 0;
 export const isProd = env.NODE_ENV === 'production';
