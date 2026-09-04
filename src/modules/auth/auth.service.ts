@@ -120,32 +120,51 @@ export class AuthService {
     if (!session || session.expiresAt < new Date()) {
       throw Errors.unauthorized('Sessão inválida ou expirada');
     }
-    // Já revogada. Se foi por ROTAÇÃO (replacedById preenchido) e alguém está
-    // reapresentando o token antigo, é sinal clássico de token roubado/replay:
-    // derruba TODAS as sessões vivas do usuário.
+
     if (session.revokedAt) {
-      if (session.replacedById) {
-        await this.revokeAllSessions(session.userId);
-        await writeAudit(this.db, {
-          actorId: session.userId,
-          entity: 'session',
-          entityId: session.id,
-          action: 'refresh-reuse-detected',
-          diff: { ip: meta.ip ?? null },
-        });
+      // Reapresentação de um token já rotacionado. Duas abas/telas do MESMO
+      // usuário podem legitimamente disparar renovações quase juntas (cada
+      // uma lê o refresh token da localStorage antes da outra escrever o
+      // novo) — isso não é roubo, é corrida entre clientes do dono da conta.
+      // Dentro de uma janela curta após a rotação, tratamos como corrida
+      // benigna e emitimos mais uma rotação normalmente. Só fora dessa
+      // janela — token antigo reaparecendo minutos/horas depois — é sinal
+      // de replay de token vazado, e aí derrubamos todas as sessões.
+      const REUSE_GRACE_MS = 15_000;
+      const withinGrace =
+        session.replacedById != null &&
+        session.revokedAt.getTime() > Date.now() - REUSE_GRACE_MS;
+
+      if (!withinGrace) {
+        if (session.replacedById) {
+          await this.revokeAllSessions(session.userId);
+          await writeAudit(this.db, {
+            actorId: session.userId,
+            entity: 'session',
+            entityId: session.id,
+            action: 'refresh-reuse-detected',
+            diff: { ip: meta.ip ?? null },
+          });
+        }
+        throw Errors.unauthorized('Sessão inválida ou expirada');
       }
-      throw Errors.unauthorized('Sessão inválida ou expirada');
+      // dentro da janela de corrida: segue para emitir mais uma rotação,
+      // sem derrubar as outras sessões do usuário.
     }
 
     const user = await this.db.user.findUniqueOrThrow({ where: { id: session.userId } });
     if (user.status !== 'ACTIVE') throw Errors.forbidden('Conta inativa');
 
-    // rotação: emite a nova e marca a atual como substituída por ela
+    // rotação: emite a nova. Só marca a sessão atual como substituída se
+    // ainda não tiver sido (evita sobrescrever o replacedById original
+    // quando essa é a segunda rotação da mesma corrida benigna acima).
     const { sessionId, tokens } = await this.issueTokens(user.id, user.role, meta);
-    await this.db.session.update({
-      where: { id: session.id },
-      data: { revokedAt: new Date(), replacedById: sessionId },
-    });
+    if (!session.revokedAt) {
+      await this.db.session.update({
+        where: { id: session.id },
+        data: { revokedAt: new Date(), replacedById: sessionId },
+      });
+    }
     return { user: this.publicUser(user), tokens };
   }
 

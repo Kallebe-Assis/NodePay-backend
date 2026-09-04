@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { PrismaClient } from '@prisma/client';
 import type { LightMyRequestResponse } from 'fastify';
 import type { AppInstance } from '../src/types/app.js';
+import { sha256 } from '../src/lib/crypto.js';
 
 type Res = Promise<LightMyRequestResponse>;
 type Body = Record<string, unknown>;
@@ -156,7 +157,7 @@ describe.skipIf(!RUN)('isolamento e permissões', () => {
     expect(audit).not.toBeNull();
   });
 
-  it('reapresentar um refresh token já rotacionado derruba todas as sessões', async () => {
+  it('reuso do refresh token LOGO após a rotação (corrida entre abas) não derruba a sessão', async () => {
     const login = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',
@@ -168,10 +169,40 @@ describe.skipIf(!RUN)('isolamento e permissões', () => {
     expect(r1.statusCode).toBe(200);
     const rt2 = r1.json().tokens.refreshToken;
 
-    // reuso do rt1 (já rotacionado) → 401 e revoga a família inteira
+    // duas abas do mesmo usuário podem correr e reapresentar rt1 quase junto
+    // com a rotação — dentro da janela de corrida isso NÃO é tratado como
+    // roubo: emite mais uma rotação normalmente.
+    const reuse = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh', payload: { refreshToken: rt1 } });
+    expect(reuse.statusCode).toBe(200);
+
+    // e a sessão obtida pela rotação original (rt2) continua válida
+    const afterReuse = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh', payload: { refreshToken: rt2 } });
+    expect(afterReuse.statusCode).toBe(200);
+  });
+
+  it('reuso do refresh token bem depois da rotação derruba todas as sessões (replay)', async () => {
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { email: `${RID}.userA@test.local`, password: pass },
+    });
+    const rt1 = login.json().tokens.refreshToken;
+
+    const r1 = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh', payload: { refreshToken: rt1 } });
+    expect(r1.statusCode).toBe(200);
+    const rt2 = r1.json().tokens.refreshToken;
+
+    // simula o token reaparecendo bem depois da rotação (ex.: token vazado
+    // e reproduzido por um atacante), fora da janela de corrida benigna
+    await db.session.update({
+      where: { tokenHash: sha256(rt1) },
+      data: { revokedAt: new Date(Date.now() - 60_000) },
+    });
+
     const reuse = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh', payload: { refreshToken: rt1 } });
     expect(reuse.statusCode).toBe(401);
 
+    // a família inteira (incluindo a sessão legítima rt2) foi derrubada
     const afterReuse = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh', payload: { refreshToken: rt2 } });
     expect(afterReuse.statusCode).toBe(401);
   });
