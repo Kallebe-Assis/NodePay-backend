@@ -56,14 +56,18 @@ Variáveis de ambiente **obrigatórias** (as demais têm default no `config/env.
 **Não** defina `PORT`/`API_PORT` — o Render injeta `PORT` e o app usa ele.
 Health check path: `/health`. Railway/Fly seguem a mesma ideia.
 
-### Banco no Supabase (ref `fbffwzpfnwfzvovwxoll`, `sa-east-1`)
+### Banco no Supabase (ref `bygtbicqexjfxjqmqkbc`)
 
 **`DATABASE_URL` no Render** (Session pooler, porta 5432 — serve p/ runtime **e**
-migrações; testado):
+migrações):
 
 ```
-postgresql://postgres.fbffwzpfnwfzvovwxoll:SUA_SENHA@aws-0-sa-east-1.pooler.supabase.com:5432/postgres
+postgresql://postgres.bygtbicqexjfxjqmqkbc:SUA_SENHA@aws-0-<REGIAO>.pooler.supabase.com:5432/postgres
 ```
+
+> Pegue `<REGIAO>` em Supabase > Project Settings > Database > Connection
+> pooling. A string acima ainda não foi testada em produção — validar após o
+> primeiro deploy.
 
 - **Transaction pooler** (`:6543/...?pgbouncer=true`) — só serverless.
 - **Direta** (`db.<ref>.supabase.co:5432`) — IPv6-only, **não** funciona no
