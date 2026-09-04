@@ -1,8 +1,10 @@
 import type { PrismaClient } from '@prisma/client';
 import {
   addDays,
+  formatBRL,
   formatShortDate,
   type Notification,
+  nowSP,
   OUTFLOW_TYPES,
   todaySP,
 } from '@nodepay/shared';
@@ -10,6 +12,12 @@ import { nb } from '../../lib/money.js';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
 import { computeBalances } from '../accounts/balance.js';
 import { recordGoalOutcomes } from '../goals/outcomes.js';
+import { computeWeeklySummary } from './weekly-summary.js';
+
+/** channel = "off" | "system" | "telegram" | "both" — inclui o app quando "system"/"both". */
+function includesSystem(channel: string | undefined | null): boolean {
+  return channel === 'system' || channel === 'both';
+}
 
 /**
  * Notificações são CALCULADAS na hora (não há tabela). O "lido" é controlado no
@@ -21,19 +29,24 @@ export class NotificationsService {
   async list(userId: string, isAdmin: boolean): Promise<{ items: Notification[]; unread: number }> {
     const settings = await this.db.userSettings.findUnique({ where: { userId } });
     const p = {
-      billsDue: settings?.notifyBillsDue ?? true,
-      invoiceClosing: settings?.notifyInvoiceClosing ?? true,
-      lowBalance: settings?.notifyLowBalance ?? true,
+      billsDue: includesSystem(settings?.notifyBillsDueChannel ?? 'system'),
+      invoiceClosing: includesSystem(settings?.notifyInvoiceClosingChannel ?? 'system'),
+      lowBalance: includesSystem(settings?.notifyLowBalanceChannel ?? 'system'),
+      weeklySummary: includesSystem(settings?.notifyWeeklySummaryChannel ?? 'off'),
+      weeklySummaryDay: settings?.weeklySummaryDay ?? 1,
       pendingUsers: settings?.notifyPendingUsers ?? true,
       threshold: settings ? nb(settings.lowBalanceThreshold) : 0,
     };
 
     const today = todaySP();
     const items: Notification[] = [];
+    // 0=domingo … 6=sábado (Luxon: segunda=1…domingo=7)
+    const todayWeekday = nowSP().weekday % 7;
+    const showWeeklySummary = p.weeklySummary && todayWeekday === p.weeklySummaryDay;
 
     // Dispara em paralelo tudo que é independente (antes era em série — cada
     // ida ao banco fora da máquina somava latência).
-    const [bills, invoices, balances, outcomes, pendingCount] = await Promise.all([
+    const [bills, invoices, balances, outcomes, pendingCount, weekly] = await Promise.all([
       p.billsDue
         ? this.db.transaction.findMany({
             where: {
@@ -61,6 +74,7 @@ export class NotificationsService {
       isAdmin && p.pendingUsers
         ? this.db.user.count({ where: { status: 'PENDING' } })
         : Promise.resolve(0),
+      showWeeklySummary ? computeWeeklySummary(this.db, userId) : Promise.resolve(null),
     ]);
 
     // ---- contas a vencer / vencidas (próx. 7 dias) ----
@@ -138,6 +152,20 @@ export class NotificationsService {
           href: '/goals',
         });
       }
+    }
+
+    // ---- resumo semanal (só no dia da semana configurado) ----
+    if (weekly) {
+      items.push({
+        id: `weekly_summary:${today}`,
+        kind: 'weekly_summary',
+        severity: weekly.net < 0 ? 'warning' : 'info',
+        title: 'Resumo da semana',
+        body: `Receitas ${formatBRL(weekly.income)} · Despesas ${formatBRL(weekly.expense)} · Resultado ${formatBRL(weekly.net)}${weekly.topCategory ? ` · Maior gasto: ${weekly.topCategory.name}` : ''}`,
+        date: today,
+        amount: weekly.net,
+        href: '/',
+      });
     }
 
     // ---- (admin) usuários aguardando aprovação ----

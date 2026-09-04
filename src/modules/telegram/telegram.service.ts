@@ -45,6 +45,41 @@ export async function sendMessage(db: PrismaClient, userId: string, text: string
   await api.sendMessage(chatId, text, { parse_mode: 'HTML' });
 }
 
+/**
+ * Testa as credenciais do bot SEM exigir que já estejam salvas: os valores
+ * passados em `override` têm prioridade sobre o que está em `UserSettings`
+ * (assim dá pra testar antes de clicar em "Salvar" no formulário).
+ */
+export async function sendTestMessage(
+  db: PrismaClient,
+  userId: string,
+  override: { botToken?: string; chatId?: string },
+): Promise<void> {
+  const s = await db.userSettings.findUnique({ where: { userId } });
+  const token =
+    override.botToken?.trim() ||
+    (s?.telegramBotTokenEnc ? decryptSecret(s.telegramBotTokenEnc) : env.TELEGRAM_BOT_TOKEN);
+  if (!token) {
+    throw Errors.badRequest('Informe o token do bot (ou salve um antes de testar).');
+  }
+  const chatId = override.chatId?.trim() || s?.telegramChatId;
+  if (!chatId) {
+    throw Errors.badRequest('Informe o Chat ID (ou pareie o chat antes de testar).');
+  }
+
+  const api = await getBotApi(token);
+  try {
+    await api.sendMessage(
+      chatId,
+      '✅ <b>NodePay</b> — credenciais do Telegram funcionando!',
+      { parse_mode: 'HTML' },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw Errors.badRequest(`Falha ao enviar pelo Telegram: ${msg}`);
+  }
+}
+
 export async function deliverDocument(db: PrismaClient, userId: string, report: GeneratedReport) {
   const { token, chatId } = await resolveTelegram(db, userId);
   const api = await getBotApi(token);

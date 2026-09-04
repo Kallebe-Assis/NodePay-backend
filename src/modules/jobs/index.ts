@@ -7,7 +7,8 @@ import { env } from '../../config/env.js';
  *   - recurrences:materialize  (diário)  -> estende lançamentos fixos no horizonte
  *   - invoices:close           (diário)  -> fecha faturas na data de fechamento
  *   - backup:run               (conforme UserSettings.backupFrequency)
- *   - telegram:digest          (de hora em hora, dispara resumos do dia)
+ *   - telegram:digest          (de hora em hora, dispara o resumo semanal no dia/hora configurado)
+ *   - notifications:push       (diário, contas a vencer/fatura fechando/saldo baixo por Telegram)
  *
  * As funções de cada job vivem em ./handlers.ts (a implementar na fase 2/7).
  */
@@ -35,6 +36,7 @@ export async function startJobs(app: FastifyInstance): Promise<void> {
     'telegram:digest',
     'goals:check',
     'reminders:send',
+    'notifications:push',
   ] as const;
   // pg-boss v10 exige a fila criada antes de agendar / consumir
   for (const name of QUEUES) await boss.createQueue(name);
@@ -48,6 +50,7 @@ export async function startJobs(app: FastifyInstance): Promise<void> {
   await boss.schedule('telegram:digest', '0 * * * *');
   await boss.schedule('goals:check', '15 6 * * *');
   await boss.schedule('reminders:send', '0 8 * * *');
+  await boss.schedule('notifications:push', '0 8 * * *');
 
   app.log.info('⏰ Jobs agendados (pg-boss)');
 }

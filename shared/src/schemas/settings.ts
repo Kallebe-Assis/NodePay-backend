@@ -28,11 +28,27 @@ export const telegramSettingsInputSchema = z.object({
 });
 export type TelegramSettingsInput = z.infer<typeof telegramSettingsInputSchema>;
 
+/** Testa as credenciais do bot sem precisar salvar antes (valores informados
+ * têm prioridade; o que faltar usa o que já está salvo). */
+export const telegramTestBodySchema = z.object({
+  botToken: z.string().max(200).optional(),
+  chatId: z.string().max(60).optional(),
+});
+export type TelegramTestBody = z.infer<typeof telegramTestBodySchema>;
+export const telegramTestResponseSchema = z.object({ ok: z.literal(true) });
+
+/** Canal de entrega de um tipo de notificação. */
+export const notificationChannelSchema = z.enum(['off', 'system', 'telegram', 'both']);
+export type NotificationChannel = z.infer<typeof notificationChannelSchema>;
+
 export const notificationSettingsInputSchema = z.object({
-  billsDue: z.boolean(),
-  invoiceClosing: z.boolean(),
-  lowBalance: z.boolean(),
-  weeklySummary: z.boolean(),
+  billsDue: notificationChannelSchema,
+  invoiceClosing: notificationChannelSchema,
+  lowBalance: notificationChannelSchema,
+  weeklySummary: notificationChannelSchema,
+  /** dia da semana do resumo semanal: 0=domingo … 6=sábado */
+  weeklySummaryDay: z.number().int().min(0).max(6),
+  weeklySummaryHour: z.number().int().min(0).max(23),
   pendingUsers: z.boolean(),
   lowBalanceThreshold: z.number().int().nonnegative(), // centavos
 });
@@ -75,10 +91,12 @@ export const settingsSchema = z.object({
     linkToken: z.string().nullable(),
   }),
   notifications: z.object({
-    billsDue: z.boolean(),
-    invoiceClosing: z.boolean(),
-    lowBalance: z.boolean(),
-    weeklySummary: z.boolean(),
+    billsDue: notificationChannelSchema,
+    invoiceClosing: notificationChannelSchema,
+    lowBalance: notificationChannelSchema,
+    weeklySummary: notificationChannelSchema,
+    weeklySummaryDay: z.number().int(),
+    weeklySummaryHour: z.number().int(),
     pendingUsers: z.boolean(),
     lowBalanceThreshold: z.number().int(),
   }),

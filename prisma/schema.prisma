@@ -136,6 +136,7 @@ model User {
   goals         Goal[]
   budgets       Budget[]
   categoryRules CategoryRule[]
+  places        Place[]
 
   @@index([status])
   @@index([role])
@@ -216,6 +217,30 @@ model Category {
   @@unique([userId, kind, name])
   @@index([userId])
   @@map("categories")
+}
+
+/// Local de compra (mercado, loja, shopping…). Opcional em cada lançamento;
+/// só a descrição é obrigatória — logo (link de imagem OU ícone), endereço,
+/// cidade/UF e cor de referência são todos opcionais.
+model Place {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  logoUrl   String?
+  icon      String?
+  address   String?
+  city      String?
+  state     String?
+  color     String?
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  transactions Transaction[]
+
+  @@index([userId])
+  @@map("places")
 }
 
 // ---------------------------------------------------------------------------
@@ -324,6 +349,11 @@ model Transaction {
   amount      BigInt
   description String
 
+  /// observação livre do usuário (opcional)
+  notes String?
+  /// etiquetas livres do usuário (opcional)
+  tags  String[] @default([])
+
   /// quando o fato aconteceu (data da compra / competência)
   competenceDate DateTime  @db.Date
   /// quando se espera pagar/receber
@@ -343,6 +373,10 @@ model Transaction {
 
   categoryId String?
   category   Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  /// local de compra (opcional) — ver model Place
+  placeId String?
+  place   Place?  @relation(fields: [placeId], references: [id], onDelete: SetNull)
 
   recurrenceId String?
   recurrence   Recurrence? @relation(fields: [recurrenceId], references: [id], onDelete: SetNull)
@@ -383,6 +417,7 @@ model Transaction {
   @@index([installmentGroupId])
   @@index([transferGroupId])
   @@index([loanId])
+  @@index([placeId])
   @@map("transactions")
 }
 
@@ -543,12 +578,22 @@ model UserSettings {
   telegramDigestHour  Int     @default(8)
 
   // ----- Notificações (preferências) -----
-  notifyBillsDue       Boolean @default(true)
-  notifyInvoiceClosing Boolean @default(true)
-  notifyLowBalance     Boolean @default(true)
-  notifyWeeklySummary  Boolean @default(false)
-  notifyPendingUsers   Boolean @default(true) // só admin
-  lowBalanceThreshold  BigInt  @default(0) // centavos; 0 = desligado
+  // Canal de cada tipo: "off" | "system" | "telegram" | "both"
+  notifyBillsDueChannel       String  @default("system")
+  notifyInvoiceClosingChannel String  @default("system")
+  notifyLowBalanceChannel     String  @default("system")
+  notifyPendingUsers          Boolean @default(true) // só admin
+  lowBalanceThreshold         BigInt  @default(0) // centavos; 0 = desligado
+  /// última data (YYYY-MM-DD) em que o push consolidado de telegram rodou (dedupe diário)
+  notifyTelegramLastSentDate  String?
+
+  // ----- Resumo semanal -----
+  notifyWeeklySummaryChannel String  @default("off")
+  /// dia da semana do envio: 0=domingo … 6=sábado
+  weeklySummaryDay           Int     @default(1)
+  weeklySummaryHour          Int     @default(8)
+  /// última semana ISO (ex.: "2026-W36") em que o resumo foi enviado por telegram (dedupe)
+  weeklySummaryLastSentWeek  String?
 
   // ----- Aparência -----
   themePref String @default("system") // system | light | dark

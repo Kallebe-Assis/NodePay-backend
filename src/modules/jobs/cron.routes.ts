@@ -61,6 +61,7 @@ export async function cronRoutes(fastify: FastifyInstance) {
         'reminders-send',
         'goals-check',
         'backup-run',
+        'notifications-push',
       ];
       for (const t of daily) {
         await runTask(t, app.db(), app.log).catch((err) =>

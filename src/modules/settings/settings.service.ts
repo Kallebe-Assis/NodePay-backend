@@ -46,10 +46,12 @@ export class SettingsService {
 
     if (body.notifications) {
       const n = body.notifications;
-      if (n.billsDue !== undefined) data.notifyBillsDue = n.billsDue;
-      if (n.invoiceClosing !== undefined) data.notifyInvoiceClosing = n.invoiceClosing;
-      if (n.lowBalance !== undefined) data.notifyLowBalance = n.lowBalance;
-      if (n.weeklySummary !== undefined) data.notifyWeeklySummary = n.weeklySummary;
+      if (n.billsDue !== undefined) data.notifyBillsDueChannel = n.billsDue;
+      if (n.invoiceClosing !== undefined) data.notifyInvoiceClosingChannel = n.invoiceClosing;
+      if (n.lowBalance !== undefined) data.notifyLowBalanceChannel = n.lowBalance;
+      if (n.weeklySummary !== undefined) data.notifyWeeklySummaryChannel = n.weeklySummary;
+      if (n.weeklySummaryDay !== undefined) data.weeklySummaryDay = n.weeklySummaryDay;
+      if (n.weeklySummaryHour !== undefined) data.weeklySummaryHour = n.weeklySummaryHour;
       if (n.pendingUsers !== undefined) data.notifyPendingUsers = n.pendingUsers;
       if (n.lowBalanceThreshold !== undefined)
         data.lowBalanceThreshold = numToBig(n.lowBalanceThreshold);
@@ -97,10 +99,12 @@ export class SettingsService {
         linkToken: s.telegramLinkToken,
       },
       notifications: {
-        billsDue: s.notifyBillsDue,
-        invoiceClosing: s.notifyInvoiceClosing,
-        lowBalance: s.notifyLowBalance,
-        weeklySummary: s.notifyWeeklySummary,
+        billsDue: s.notifyBillsDueChannel,
+        invoiceClosing: s.notifyInvoiceClosingChannel,
+        lowBalance: s.notifyLowBalanceChannel,
+        weeklySummary: s.notifyWeeklySummaryChannel,
+        weeklySummaryDay: s.weeklySummaryDay,
+        weeklySummaryHour: s.weeklySummaryHour,
         pendingUsers: s.notifyPendingUsers,
         lowBalanceThreshold: nb(s.lowBalanceThreshold),
       },

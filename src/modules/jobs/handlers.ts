@@ -14,6 +14,7 @@ const QUEUE_TO_TASK: Record<string, TaskName> = {
   'telegram:digest': 'telegram-digest',
   'goals:check': 'goals-check',
   'reminders:send': 'reminders-send',
+  'notifications:push': 'notifications-push',
 };
 
 export async function registerHandlers(boss: PgBoss, app: FastifyInstance): Promise<void> {

@@ -31,6 +31,19 @@ export const recurrenceInputSchema = z.discriminatedUnion('mode', [
 ]);
 export type RecurrenceInput = z.infer<typeof recurrenceInputSchema>;
 
+/** Etiqueta livre (lançamento). Curta, sem obrigar formato. */
+export const tagSchema = z.string().trim().min(1).max(24);
+/** Observação livre (lançamento). */
+export const notesSchema = z.string().max(500);
+
+/** Campos opcionais comuns a qualquer lançamento (conta ou cartão). */
+const optionalExtras = {
+  notes: notesSchema.optional(),
+  tags: z.array(tagSchema).max(10).optional(),
+  /** local de compra (opcional) — ver /places */
+  placeId: z.string().optional(),
+};
+
 /** ---- Tela 1: lançamento em conta (despesa OU receita) ---- */
 export const accountEntryBodySchema = z.object({
   kind: z.literal('account'),
@@ -39,12 +52,14 @@ export const accountEntryBodySchema = z.object({
   description: z.string().min(1, 'Informe uma descrição').max(160),
   date: isoDateSchema, // data de competência
   accountId: z.string().min(1, 'Selecione a conta'),
-  categoryId: z.string().min(1, 'Selecione a categoria'),
+  /** opcional — lançamento sem categoria fica em "Sem categoria" */
+  categoryId: z.string().optional(),
   paid: z.boolean(), // toggle PAGO / PENDENTE
   recurrence: recurrenceInputSchema.default({ mode: 'none' }),
   /** lembrete no Telegram X dias antes do vencimento */
   remindTelegram: z.boolean().default(false),
   remindDaysBefore: z.number().int().min(0).max(30).default(1),
+  ...optionalExtras,
 });
 export type AccountEntryBody = z.infer<typeof accountEntryBodySchema>;
 
@@ -55,8 +70,10 @@ export const cardEntryBodySchema = z.object({
   description: z.string().min(1, 'Informe uma descrição').max(160),
   purchaseDate: isoDateSchema,
   creditCardId: z.string().min(1, 'Selecione o cartão'),
-  categoryId: z.string().min(1, 'Selecione a categoria'),
+  /** opcional — lançamento sem categoria fica em "Sem categoria" */
+  categoryId: z.string().optional(),
   installments: z.number().int().min(1).max(60).default(1),
+  ...optionalExtras,
 });
 export type CardEntryBody = z.infer<typeof cardEntryBodySchema>;
 
@@ -84,10 +101,15 @@ export const updateTransactionBodySchema = z.object({
   description: z.string().min(1).max(160).optional(),
   amount: centsSchema.optional(),
   date: isoDateSchema.optional(),
+  /** string vazia = remover a categoria */
   categoryId: z.string().optional(),
   accountId: z.string().optional(),
   status: transactionStatusSchema.optional(),
   paidDate: isoDateSchema.nullable().optional(),
+  notes: notesSchema.nullable().optional(),
+  tags: z.array(tagSchema).max(10).optional(),
+  /** string vazia = remover o local de compra */
+  placeId: z.string().optional(),
   /** Ao editar um item de uma série: alcance da alteração. */
   scope: z.enum(['one', 'forward', 'all']).default('one'),
 });
@@ -108,6 +130,8 @@ export const listTransactionsQuerySchema = paginationQuerySchema.extend({
   categoryId: z.string().optional(),
   /** subcategoria específica (tem prioridade sobre categoryId) */
   subcategoryId: z.string().optional(),
+  placeId: z.string().optional(),
+  tag: z.string().optional(),
   type: transactionTypeSchema.optional(),
   status: transactionStatusSchema.optional(),
   /** filtro de sentido: todos / despesas / receitas */
@@ -133,6 +157,9 @@ export const transactionSchema = z.object({
   creditCardId: z.string().nullable(),
   invoiceId: z.string().nullable(),
   categoryId: z.string().nullable(),
+  notes: z.string().nullable(),
+  tags: z.array(z.string()),
+  placeId: z.string().nullable(),
   recurrenceId: z.string().nullable(),
   installmentGroupId: z.string().nullable(),
   installmentNumber: z.number().int().nullable(),

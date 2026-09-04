@@ -1,6 +1,13 @@
 import type { PrismaClient } from '@prisma/client';
 import type { FastifyBaseLogger } from 'fastify';
-import { addDays, formatBRL, formatShortDate, todaySP } from '@nodepay/shared';
+import {
+  addDays,
+  formatBRL,
+  formatShortDate,
+  nowSP,
+  OUTFLOW_TYPES,
+  todaySP,
+} from '@nodepay/shared';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
 import { nb } from '../../lib/money.js';
 import { runBackup } from '../backup/backup.service.js';
@@ -8,6 +15,10 @@ import { recordGoalOutcomes } from '../goals/outcomes.js';
 import { sendMessage } from '../telegram/telegram.service.js';
 import { materializeFixedRecurrences } from '../recurrences/materialize.js';
 import { closeDueInvoices } from '../invoices/close.js';
+import { computeBalances } from '../accounts/balance.js';
+import { computeWeeklySummary } from '../notifications/weekly-summary.js';
+
+const isTelegramChannel = (ch: string | null | undefined) => ch === 'telegram' || ch === 'both';
 
 /**
  * Implementação única de cada tarefa agendada. Consumida por:
@@ -22,7 +33,8 @@ export type TaskName =
   | 'reminders-send'
   | 'goals-check'
   | 'backup-run'
-  | 'telegram-digest';
+  | 'telegram-digest'
+  | 'notifications-push';
 
 export const TASK_NAMES: TaskName[] = [
   'recurrences-materialize',
@@ -31,6 +43,7 @@ export const TASK_NAMES: TaskName[] = [
   'goals-check',
   'backup-run',
   'telegram-digest',
+  'notifications-push',
 ];
 
 type TaskFn = (db: PrismaClient, log: FastifyBaseLogger) => Promise<Record<string, number>>;
@@ -122,11 +135,110 @@ const tasks: Record<TaskName, TaskFn> = {
     return { candidates: candidates.length, sent };
   },
 
-  'telegram-digest': async (_db, log) => {
-    // Resumo diário consolidado ainda não implementado; lembretes e objetivos
-    // já cobrem as notificações no Telegram.
-    log.debug('telegram-digest — noop');
-    return { skipped: 1 };
+  // Resumo SEMANAL por Telegram: roda de hora em hora, só age quando o
+  // dia-da-semana + hora configurados pelo usuário batem com agora (SP).
+  'telegram-digest': async (db, log) => {
+    const now = nowSP();
+    const weekday = now.weekday % 7; // Luxon: 1=seg…7=dom -> 0=dom…6=sáb
+    const isoWeek = `${now.weekYear}-W${String(now.weekNumber).padStart(2, '0')}`;
+
+    const candidates = await db.userSettings.findMany({
+      where: {
+        telegramEnabled: true,
+        notifyWeeklySummaryChannel: { in: ['telegram', 'both'] },
+        weeklySummaryDay: weekday,
+        weeklySummaryHour: now.hour,
+        OR: [{ weeklySummaryLastSentWeek: null }, { weeklySummaryLastSentWeek: { not: isoWeek } }],
+      },
+      select: { userId: true },
+    });
+
+    let sent = 0;
+    for (const s of candidates) {
+      const w = await computeWeeklySummary(db, s.userId);
+      const line =
+        `📊 <b>Resumo da semana</b>\n${formatShortDate(w.from)} a ${formatShortDate(w.to)}\n` +
+        `Receitas: ${formatBRL(w.income)}\nDespesas: ${formatBRL(w.expense)}\nResultado: ${formatBRL(w.net)}` +
+        (w.topCategory ? `\nMaior gasto: ${w.topCategory.name} (${formatBRL(w.topCategory.total)})` : '');
+      await sendMessage(db, s.userId, line).catch((err) =>
+        log.warn({ err, userId: s.userId }, 'falha ao enviar resumo semanal no Telegram'),
+      );
+      await db.userSettings.update({
+        where: { userId: s.userId },
+        data: { weeklySummaryLastSentWeek: isoWeek },
+      });
+      sent++;
+    }
+    return { candidates: candidates.length, sent };
+  },
+
+  // Push diário consolidado (contas a vencer / fatura fechando / saldo baixo)
+  // para quem escolheu canal telegram/both nessas preferências. 1x por dia.
+  'notifications-push': async (db, log) => {
+    const today = todaySP();
+    const candidates = await db.userSettings.findMany({
+      where: {
+        telegramEnabled: true,
+        OR: [
+          { notifyBillsDueChannel: { in: ['telegram', 'both'] } },
+          { notifyInvoiceClosingChannel: { in: ['telegram', 'both'] } },
+          { notifyLowBalanceChannel: { in: ['telegram', 'both'] } },
+        ],
+        AND: [
+          { OR: [{ notifyTelegramLastSentDate: null }, { notifyTelegramLastSentDate: { not: today } }] },
+        ],
+      },
+      select: {
+        userId: true,
+        notifyBillsDueChannel: true,
+        notifyInvoiceClosingChannel: true,
+        notifyLowBalanceChannel: true,
+        lowBalanceThreshold: true,
+      },
+    });
+
+    let sent = 0;
+    for (const s of candidates) {
+      const lines: string[] = [];
+
+      if (isTelegramChannel(s.notifyBillsDueChannel)) {
+        const bills = await db.transaction.count({
+          where: {
+            userId: s.userId,
+            type: { in: OUTFLOW_TYPES },
+            status: { in: ['PENDING', 'SCHEDULED'] },
+            dueDate: { lte: isoToDbDate(addDays(today, 7)) },
+          },
+        });
+        if (bills > 0) lines.push(`📅 <b>${bills} conta(s) a vencer</b> nos próximos 7 dias`);
+      }
+
+      if (isTelegramChannel(s.notifyInvoiceClosingChannel)) {
+        const invoices = await db.invoice.count({
+          where: { userId: s.userId, status: 'OPEN', closingDate: { lte: isoToDbDate(addDays(today, 3)) } },
+        });
+        if (invoices > 0) lines.push(`💳 <b>${invoices} fatura(s)</b> fechando nos próximos 3 dias`);
+      }
+
+      const threshold = nb(s.lowBalanceThreshold);
+      if (isTelegramChannel(s.notifyLowBalanceChannel) && threshold > 0) {
+        const balances = await computeBalances(db, { userId: s.userId });
+        const total = [...balances.values()].reduce((sum, b) => sum + b.projectedBalance, 0);
+        if (total < threshold) lines.push(`⚠️ <b>Saldo projetado baixo</b>: ${formatBRL(total)}`);
+      }
+
+      if (lines.length > 0) {
+        await sendMessage(db, s.userId, lines.join('\n')).catch((err) =>
+          log.warn({ err, userId: s.userId }, 'falha ao enviar push de notificações no Telegram'),
+        );
+        sent++;
+      }
+      await db.userSettings.update({
+        where: { userId: s.userId },
+        data: { notifyTelegramLastSentDate: today },
+      });
+    }
+    return { candidates: candidates.length, sent };
   },
 };
 

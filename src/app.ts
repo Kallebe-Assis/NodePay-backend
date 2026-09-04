@@ -34,6 +34,7 @@ import { calendarRoutes } from './modules/calendar/calendar.routes.js';
 import { cronRoutes } from './modules/jobs/cron.routes.js';
 import { budgetRoutes } from './modules/budgets/budgets.routes.js';
 import { categoryRuleRoutes } from './modules/category-rules/category-rules.routes.js';
+import { placeRoutes } from './modules/places/places.routes.js';
 import { recurrenceRoutes } from './modules/recurrences/recurrences.routes.js';
 import { searchRoutes } from './modules/search/search.routes.js';
 
@@ -92,6 +93,7 @@ export async function buildApp(): Promise<AppInstance> {
       await api.register(goalRoutes, { prefix: '/goals' });
       await api.register(budgetRoutes, { prefix: '/budgets' });
       await api.register(categoryRuleRoutes, { prefix: '/category-rules' });
+      await api.register(placeRoutes, { prefix: '/places' });
       await api.register(recurrenceRoutes, { prefix: '/recurrences' });
       await api.register(calendarRoutes, { prefix: '/calendar' });
       await api.register(searchRoutes, { prefix: '/search' });

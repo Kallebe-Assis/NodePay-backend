@@ -42,12 +42,18 @@ export class TransactionsService {
   private async createAccountEntry(userId: string, body: AccountEntryBody) {
     await this.assertAccount(userId, body.accountId);
     await this.assertCategory(userId, body.categoryId);
+    await this.assertPlace(userId, body.placeId);
 
     const type = body.direction === 'expense' ? 'EXPENSE' : 'INCOME';
     const today = todaySP();
     const remind = {
       remindTelegram: body.remindTelegram ?? false,
       remindDaysBefore: body.remindDaysBefore ?? 1,
+    };
+    const extras = {
+      notes: body.notes || null,
+      tags: body.tags ?? [],
+      placeId: body.placeId || null,
     };
 
     return this.db.$transaction(async (tx) => {
@@ -64,8 +70,9 @@ export class TransactionsService {
             paidDate: body.paid ? isoToDbDate(body.date) : null,
             status: statusFor(body.paid, body.date, today),
             accountId: body.accountId,
-            categoryId: body.categoryId,
+            categoryId: body.categoryId || null,
             ...remind,
+            ...extras,
           },
         });
         return { created: 1, transactions: [this.present(row)] };
@@ -110,12 +117,13 @@ export class TransactionsService {
                 paidDate: paidThis ? isoToDbDate(date) : null,
                 status: statusFor(paidThis, date, today),
                 accountId: body.accountId,
-                categoryId: body.categoryId,
+                categoryId: body.categoryId || null,
                 recurrenceId: rec.id,
                 installmentGroupId: groupId,
                 installmentNumber: i + 1,
                 installmentTotal: n,
                 ...remind,
+                ...extras,
               },
             }),
           );
@@ -157,9 +165,10 @@ export class TransactionsService {
               paidDate: paidThis ? isoToDbDate(date) : null,
               status: statusFor(paidThis, date, today),
               accountId: body.accountId,
-              categoryId: body.categoryId,
+              categoryId: body.categoryId || null,
               recurrenceId: rec.id,
               ...remind,
+              ...extras,
             },
           }),
         );
@@ -175,6 +184,12 @@ export class TransactionsService {
     });
     if (!card) throw Errors.notFound('Cartão');
     await this.assertCategory(userId, body.categoryId);
+    await this.assertPlace(userId, body.placeId);
+    const extras = {
+      notes: body.notes || null,
+      tags: body.tags ?? [],
+      placeId: body.placeId || null,
+    };
 
     const cycle = { closingDay: card.closingDay, dueDay: card.dueDay };
     const placements = invoicesForInstallments(body.purchaseDate, body.installments, cycle);
@@ -208,10 +223,11 @@ export class TransactionsService {
             status: 'PENDING',
             creditCardId: card.id,
             invoiceId: invoice.id,
-            categoryId: body.categoryId,
+            categoryId: body.categoryId || null,
             installmentGroupId: groupId,
             installmentNumber: i + 1,
             installmentTotal: body.installments,
+            ...extras,
           },
         });
         rows.push(row);
@@ -277,6 +293,8 @@ export class TransactionsService {
       ...(scope.userId ? { userId: scope.userId } : {}),
       ...(q.accountId ? { accountId: q.accountId } : {}),
       ...(q.creditCardId ? { creditCardId: q.creditCardId } : {}),
+      ...(q.placeId ? { placeId: q.placeId } : {}),
+      ...(q.tag ? { tags: { has: q.tag } } : {}),
       ...categoryFilter,
       ...(q.type
         ? { type: q.type }
@@ -389,12 +407,14 @@ export class TransactionsService {
     // distribute() e não pode ser sobrescrito em bloco). Data/status/pagamento
     // continuam por ocorrência.
     if (body.scope !== 'one' && current.recurrenceId) {
+      await this.assertPlace(current.userId, body.placeId || undefined);
       const rec = await this.db.recurrence.findUnique({ where: { id: current.recurrenceId } });
       const canAmount = rec?.mode === 'FIXED';
       const seriesData = {
         description: body.description,
-        categoryId: body.categoryId,
+        categoryId: body.categoryId === '' ? null : body.categoryId,
         accountId: body.accountId,
+        placeId: body.placeId === '' ? null : body.placeId,
         ...(canAmount && body.amount != null ? { amount: numToBig(body.amount) } : {}),
       };
       await this.db.transaction.updateMany({
@@ -410,7 +430,7 @@ export class TransactionsService {
           where: { id: rec.id },
           data: {
             description: body.description ?? undefined,
-            categoryId: body.categoryId ?? undefined,
+            categoryId: body.categoryId === '' ? null : (body.categoryId ?? undefined),
             accountId: body.accountId ?? undefined,
             ...(canAmount && body.amount != null ? { amount: numToBig(body.amount) } : {}),
           },
@@ -420,6 +440,9 @@ export class TransactionsService {
       return this.present(fresh);
     }
 
+    if (body.categoryId) await this.assertCategory(current.userId, body.categoryId);
+    if (body.placeId) await this.assertPlace(current.userId, body.placeId);
+
     const row = await this.db.transaction.update({
       where: { id },
       data: {
@@ -427,11 +450,14 @@ export class TransactionsService {
         amount: body.amount != null ? numToBig(body.amount) : undefined,
         competenceDate: body.date ? isoToDbDate(body.date) : undefined,
         dueDate: body.date ? isoToDbDate(body.date) : undefined,
-        categoryId: body.categoryId,
+        categoryId: body.categoryId === '' ? null : body.categoryId,
         accountId: body.accountId,
         status: body.status,
         paidDate:
           body.paidDate === null ? null : body.paidDate ? isoToDbDate(body.paidDate) : undefined,
+        notes: body.notes,
+        tags: body.tags,
+        placeId: body.placeId === '' ? null : body.placeId,
       },
     });
     if (row.invoiceId) await recalcInvoiceTotal(this.db, row.invoiceId);
@@ -536,9 +562,16 @@ export class TransactionsService {
     const ok = await this.db.account.findFirst({ where: { id: accountId, userId }, select: { id: true } });
     if (!ok) throw Errors.badRequest('Conta inválida');
   }
-  private async assertCategory(userId: string, categoryId: string) {
+  /** Categoria agora é opcional — só valida quando informada. */
+  private async assertCategory(userId: string, categoryId?: string | null) {
+    if (!categoryId) return;
     const ok = await this.db.category.findFirst({ where: { id: categoryId, userId }, select: { id: true } });
     if (!ok) throw Errors.badRequest('Categoria inválida');
+  }
+  private async assertPlace(userId: string, placeId?: string | null) {
+    if (!placeId) return;
+    const ok = await this.db.place.findFirst({ where: { id: placeId, userId }, select: { id: true } });
+    if (!ok) throw Errors.badRequest('Local de compra inválido');
   }
 
   private present(r: any) {
@@ -548,6 +581,9 @@ export class TransactionsService {
       status: r.status,
       amount: nb(r.amount),
       description: r.description,
+      notes: r.notes ?? null,
+      tags: r.tags ?? [],
+      placeId: r.placeId ?? null,
       competenceDate: dbDateToIso(r.competenceDate),
       dueDate: dbDateToIso(r.dueDate),
       paidDate: r.paidDate ? dbDateToIso(r.paidDate) : null,
