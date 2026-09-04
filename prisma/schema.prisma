@@ -411,13 +411,20 @@ model Transaction {
   @@index([userId, competenceDate])
   @@index([userId, dueDate])
   @@index([userId, status])
+  /// dá suporte a computeBalances() e netWorth() — hoje varrem por
+  /// paidDate sem esse índice (crescem com o histórico do usuário)
+  @@index([userId, paidDate])
   @@index([remindTelegram, reminderSentAt])
   @@index([accountId, paidDate])
+  /// ponta de destino de uma TRANSFER — a de origem já tem [accountId, paidDate]
+  @@index([transferToAccountId, paidDate])
   @@index([invoiceId])
   @@index([installmentGroupId])
   @@index([transferGroupId])
   @@index([loanId])
   @@index([placeId])
+  /// groupBy de RecurrencesService.list() agrupa por essa coluna
+  @@index([recurrenceId])
   @@map("transactions")
 }
 

@@ -238,17 +238,18 @@ export class DashboardService {
           type: { in: [...IN, ...OUT] },
           accountId: { not: null },
         },
+        // já vem ordenado pelo banco (índice [userId, paidDate]) — evita
+        // reordenar em JS uma lista que só cresce com o histórico do usuário
+        orderBy: { paidDate: 'asc' },
         select: { type: true, amount: true, paidDate: true },
       }),
     ]);
 
     const opening = accounts.reduce((s, a) => s + nb(a.openingBalance), 0);
-    const deltas = rows
-      .map((r) => ({
-        date: dbDateToIso(r.paidDate as Date),
-        v: IN.includes(r.type) ? nb(r.amount) : -nb(r.amount),
-      }))
-      .sort((a, b) => (a.date < b.date ? -1 : 1));
+    const deltas = rows.map((r) => ({
+      date: dbDateToIso(r.paidDate as Date),
+      v: IN.includes(r.type) ? nb(r.amount) : -nb(r.amount),
+    }));
 
     const points: { month: string; total: number }[] = [];
     let i = 0;
