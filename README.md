@@ -56,18 +56,14 @@ Variáveis de ambiente **obrigatórias** (as demais têm default no `config/env.
 **Não** defina `PORT`/`API_PORT` — o Render injeta `PORT` e o app usa ele.
 Health check path: `/health`. Railway/Fly seguem a mesma ideia.
 
-### Banco no Supabase (ref `bygtbicqexjfxjqmqkbc`)
+### Banco no Supabase (ref `bygtbicqexjfxjqmqkbc`, `us-west-2`)
 
 **`DATABASE_URL` no Render** (Session pooler, porta 5432 — serve p/ runtime **e**
-migrações):
+migrações; testado):
 
 ```
-postgresql://postgres.bygtbicqexjfxjqmqkbc:SUA_SENHA@aws-0-<REGIAO>.pooler.supabase.com:5432/postgres
+postgresql://postgres.bygtbicqexjfxjqmqkbc:SUA_SENHA@aws-0-us-west-2.pooler.supabase.com:5432/postgres
 ```
-
-> Pegue `<REGIAO>` em Supabase > Project Settings > Database > Connection
-> pooling. A string acima ainda não foi testada em produção — validar após o
-> primeiro deploy.
 
 - **Transaction pooler** (`:6543/...?pgbouncer=true`) — só serverless.
 - **Direta** (`db.<ref>.supabase.co:5432`) — IPv6-only, **não** funciona no
@@ -136,12 +132,11 @@ Em serverless, troque por `@sparticuz/chromium`.
 ## Desempenho / latência
 
 O que mais pesa num deploy é a **distância entre o servidor e o banco**: cada
-ida ao Postgres custa o *round-trip* de rede. Local ≈ 0 ms; Render(EUA) →
-Supabase(`sa-east-1`) ≈ 100–180 ms **por query**.
+ida ao Postgres custa o *round-trip* de rede. Local ≈ 0 ms; um backend numa
+região distante do Supabase (`us-west-2`) pode custar 100+ ms **por query**.
 
-- **Co-localize.** O ideal é o backend na mesma região do banco. O **Fly.io tem
-  a região `gru` (São Paulo)** — junto do Supabase `sa-east-1`, volta a ~5 ms.
-  No Render, a região mais perto é **Virginia** (~110 ms); evite Oregon (~180 ms).
+- **Co-localize.** O ideal é o backend na mesma região do banco. No Render, a
+  região mais perto do Supabase `us-west-2` é **Oregon**; evite Virginia/Frankfurt.
 - **Menos queries por request** (já feito no código):
   - o `status/role` do usuário é servido de um cache de ~20 s
     (`lib/user-auth-cache.ts`, `AUTH_CACHE_TTL_MS`) — antes era 1 `SELECT` por request;
