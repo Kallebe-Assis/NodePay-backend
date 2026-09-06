@@ -12,6 +12,7 @@ export type BalRow = {
   transferToAccountId: string | null;
   type: string;
   amount: bigint;
+  paidAmount?: bigint | null;
   status: string;
   paidDate: Date | null;
 };
@@ -25,6 +26,7 @@ const TX_SELECT = {
   transferToAccountId: true,
   type: true,
   amount: true,
+  paidAmount: true,
   status: true,
   paidDate: true,
 } as const;
@@ -106,24 +108,29 @@ export function aggregate(
   const add = (m: Map<string, number>, id: string, v: number) => m.set(id, (m.get(id) ?? 0) + v);
 
   for (const r of rows) {
-    const amt = nb(r.amount);
-    const liquidado = r.paidDate != null && r.paidDate <= today;
-    const pendente = PENDING.has(r.status);
-    if (!liquidado && !pendente) continue;
+    const full = nb(r.amount);
+    const isPartial = r.status === 'PARTIAL';
+    // quanto já foi liquidado: total (PAID), parcial (PARTIAL) ou nada.
+    const paidPortion = isPartial ? nb(r.paidAmount ?? 0n) : r.status === 'PAID' ? full : 0;
+    const liquidadoDate = r.paidDate != null && r.paidDate <= today;
+    const realizedNow = liquidadoDate ? paidPortion : 0;
+    // o que ainda falta liquidar entra no projetado (pendente/agendado/parcial).
+    const pendingPortion = PENDING.has(r.status) || isPartial ? full - paidPortion : 0;
+    if (realizedNow === 0 && pendingPortion === 0) continue;
 
     // ponta de origem (accountId)
     if (r.accountId && ids.has(r.accountId)) {
       const sign = IN.has(r.type) ? 1 : OUT.has(r.type) || r.type === 'TRANSFER' ? -1 : 0;
       if (sign !== 0) {
-        if (liquidado) add(curDelta, r.accountId, sign * amt);
-        if (pendente) add(pendDelta, r.accountId, sign * amt);
+        if (realizedNow) add(curDelta, r.accountId, sign * realizedNow);
+        if (pendingPortion) add(pendDelta, r.accountId, sign * pendingPortion);
       }
     }
 
     // ponta de destino da transferência (transferToAccountId)
     if (r.type === 'TRANSFER' && r.transferToAccountId && ids.has(r.transferToAccountId)) {
-      if (liquidado) add(curDelta, r.transferToAccountId, amt);
-      if (pendente) add(pendDelta, r.transferToAccountId, amt);
+      if (realizedNow) add(curDelta, r.transferToAccountId, realizedNow);
+      if (pendingPortion) add(pendDelta, r.transferToAccountId, pendingPortion);
     }
   }
 

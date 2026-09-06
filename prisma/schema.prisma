@@ -57,6 +57,7 @@ enum TransactionType {
 enum TransactionStatus {
   PENDING
   SCHEDULED
+  PARTIAL
   PAID
   CANCELED
 }
@@ -347,6 +348,10 @@ model Transaction {
 
   /// SEMPRE positivo. O sinal (entra/sai) vem de `type`.
   amount      BigInt
+  /// quanto já foi liquidado (centavos). 0 salvo em pagamento parcial (status
+  /// PARTIAL) ou total (PAID, onde vale `amount`). O restante (amount -
+  /// paidAmount) segue pendente / projetado.
+  paidAmount  BigInt @default(0)
   description String
 
   /// observação livre do usuário (opcional)

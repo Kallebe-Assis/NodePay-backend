@@ -10,6 +10,7 @@ import {
   importPreviewResponseSchema,
   listTransactionsQuerySchema,
   markPaidBodySchema,
+  transactionListTotalsSchema,
   transactionSchema,
   updateTransactionBodySchema,
 } from '@nodepay/shared';
@@ -43,6 +44,7 @@ export async function transactionRoutes(fastify: FastifyInstance) {
             page: z.number().int(),
             pageSize: z.number().int(),
             total: z.number().int(),
+            totals: transactionListTotalsSchema,
           }),
         },
       },

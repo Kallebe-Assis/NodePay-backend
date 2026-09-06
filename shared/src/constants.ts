@@ -82,10 +82,19 @@ export const INFLOW_TYPES: TransactionType[] = [
 export const TransactionStatus = {
   PENDING: 'PENDING', // A pagar / a receber (afeta só o saldo projetado)
   SCHEDULED: 'SCHEDULED', // Agendado no futuro (afeta só o saldo projetado)
+  PARTIAL: 'PARTIAL', // Pago em parte — `paidAmount` liquidado, o resto pendente
   PAID: 'PAID', // Liquidado (afeta o saldo atual)
   CANCELED: 'CANCELED', // Cancelado (não afeta nada)
 } as const;
 export type TransactionStatus = (typeof TransactionStatus)[keyof typeof TransactionStatus];
+
+export const TransactionStatusLabel: Record<TransactionStatus, string> = {
+  PENDING: 'Pendente',
+  SCHEDULED: 'Agendado',
+  PARTIAL: 'Parcial',
+  PAID: 'Pago',
+  CANCELED: 'Cancelado',
+};
 
 export const RecurrenceMode = {
   FIXED: 'FIXED', // repete todo período, sem data fim

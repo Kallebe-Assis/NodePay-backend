@@ -1,4 +1,5 @@
-import type { Prisma, PrismaClient, TransactionType } from '@prisma/client';
+import { Prisma } from '@prisma/client';
+import type { PrismaClient, TransactionType } from '@prisma/client';
 import {
   addMonths,
   type AccountEntryBody,
@@ -56,6 +57,11 @@ export class TransactionsService {
       placeId: body.placeId || null,
     };
 
+    // Toda despesa/receita guarda 2 datas: competência (`date`) e pagamento
+    // (`paymentDate`). Sem `paymentDate` informado, o pagamento planejado cai
+    // na própria competência.
+    const paymentIso = body.paymentDate ?? body.date;
+
     return this.db.$transaction(async (tx) => {
       // ---- lançamento único ----
       if (body.recurrence.mode === 'none') {
@@ -64,11 +70,12 @@ export class TransactionsService {
             userId,
             type,
             amount: numToBig(body.amount),
+            paidAmount: numToBig(body.paid ? body.amount : 0),
             description: body.description,
             competenceDate: isoToDbDate(body.date),
-            dueDate: isoToDbDate(body.date),
-            paidDate: body.paid ? isoToDbDate(body.date) : null,
-            status: statusFor(body.paid, body.date, today),
+            dueDate: isoToDbDate(paymentIso),
+            paidDate: body.paid ? isoToDbDate(paymentIso) : null,
+            status: statusFor(body.paid, paymentIso, today),
             accountId: body.accountId,
             categoryId: body.categoryId || null,
             ...remind,
@@ -105,17 +112,19 @@ export class TransactionsService {
         for (let i = 0; i < n; i++) {
           const date = addMonths(body.date, i);
           const paidThis = body.paid && i === 0;
+          const dueIso = paidThis ? paymentIso : date;
           rows.push(
             await tx.transaction.create({
               data: {
                 userId,
                 type,
                 amount: numToBig(parts[i]!),
+                paidAmount: numToBig(paidThis ? parts[i]! : 0),
                 description: `${body.description} (${i + 1}/${n})`,
                 competenceDate: isoToDbDate(date),
-                dueDate: isoToDbDate(date),
-                paidDate: paidThis ? isoToDbDate(date) : null,
-                status: statusFor(paidThis, date, today),
+                dueDate: isoToDbDate(dueIso),
+                paidDate: paidThis ? isoToDbDate(paymentIso) : null,
+                status: statusFor(paidThis, dueIso, today),
                 accountId: body.accountId,
                 categoryId: body.categoryId || null,
                 recurrenceId: rec.id,
@@ -159,11 +168,14 @@ export class TransactionsService {
               userId,
               type,
               amount: numToBig(body.amount),
+              paidAmount: numToBig(paidThis ? body.amount : 0),
               description: body.description,
               competenceDate: isoToDbDate(date),
-              dueDate: isoToDbDate(date),
-              paidDate: paidThis ? isoToDbDate(date) : null,
-              status: statusFor(paidThis, date, today),
+              dueDate: isoToDbDate(paidThis ? paymentIso : date),
+              paidDate: paidThis ? isoToDbDate(paymentIso) : null,
+              // Recorrência FIXA nasce sempre PENDENTE (nunca AGENDADO): o
+              // usuário confirma cada pagamento informando data e valor.
+              status: paidThis ? 'PAID' : 'PENDING',
               accountId: body.accountId,
               categoryId: body.categoryId || null,
               recurrenceId: rec.id,
@@ -193,7 +205,9 @@ export class TransactionsService {
 
     const cycle = { closingDay: card.closingDay, dueDay: card.dueDay };
     const placements = invoicesForInstallments(body.purchaseDate, body.installments, cycle);
-    const parts = distribute(body.amount, body.installments);
+    // `amount` pode ser o TOTAL da compra (padrão) ou o valor de CADA parcela.
+    const total = body.amountIsPerInstallment ? body.amount * body.installments : body.amount;
+    const parts = distribute(total, body.installments);
     const groupId = `card_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     return this.db.$transaction(async (tx) => {
@@ -326,19 +340,71 @@ export class TransactionsService {
     };
   }
 
+  /** Traduz `sortBy`/`sortDir` no `orderBy` do Prisma (com desempate estável). */
+  private listOrderBy(q: ListTransactionsQuery): Prisma.TransactionOrderByWithRelationInput[] {
+    const dir: Prisma.SortOrder = q.sortDir ?? 'desc';
+    const primary: Prisma.TransactionOrderByWithRelationInput =
+      q.sortBy === 'amount'
+        ? { amount: dir }
+        : q.sortBy === 'description'
+          ? { description: dir }
+          : q.sortBy === 'status'
+            ? { status: dir }
+            : q.sortBy === 'dueDate'
+              ? { dueDate: dir }
+              : q.sortBy === 'paidDate'
+                ? { paidDate: dir }
+                : q.sortBy === 'competenceDate'
+                  ? { competenceDate: dir }
+                  : q.sortBy === 'account'
+                    ? { account: { name: dir } }
+                    : q.sortBy === 'category'
+                      ? { category: { name: dir } }
+                      : { createdAt: dir };
+    return [primary, { createdAt: dir }, { id: 'desc' }];
+  }
+
   async list(scope: { userId?: string }, q: ListTransactionsQuery) {
     const where = this.listWhere(scope, q);
-    const [rows, total] = await Promise.all([
+    const [rows, total, grouped] = await Promise.all([
       this.db.transaction.findMany({
         where,
-        orderBy: [{ competenceDate: 'desc' }, { createdAt: 'desc' }],
+        orderBy: this.listOrderBy(q),
         skip: (q.page - 1) * q.pageSize,
         take: q.pageSize,
       }),
       this.db.transaction.count({ where }),
+      // Totais do conjunto FILTRADO inteiro (não só a página) — rodapé da tela.
+      this.db.transaction.groupBy({
+        by: ['type'],
+        where,
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
     ]);
 
-    return { data: rows.map((r) => this.present(r)), page: q.page, pageSize: q.pageSize, total };
+    let income = 0;
+    let expense = 0;
+    let incomeCount = 0;
+    let expenseCount = 0;
+    for (const g of grouped) {
+      const sum = nb(g._sum.amount);
+      if (INFLOW_TYPES.includes(g.type)) {
+        income += sum;
+        incomeCount += g._count._all;
+      } else {
+        expense += sum;
+        expenseCount += g._count._all;
+      }
+    }
+
+    return {
+      data: rows.map((r) => this.present(r)),
+      page: q.page,
+      pageSize: q.pageSize,
+      total,
+      totals: { count: total, incomeCount, expenseCount, income, expense, net: income - expense },
+    };
   }
 
   /** Exporta os lançamentos que casam com os filtros como CSV (pt-BR, ';'). */
@@ -360,6 +426,7 @@ export class TransactionsService {
     const STATUS: Record<string, string> = {
       PENDING: 'Pendente',
       SCHEDULED: 'Agendado',
+      PARTIAL: 'Parcial',
       PAID: 'Pago',
       CANCELED: 'Cancelado',
     };
@@ -443,18 +510,35 @@ export class TransactionsService {
     if (body.categoryId) await this.assertCategory(current.userId, body.categoryId);
     if (body.placeId) await this.assertPlace(current.userId, body.placeId);
 
+    // Cartão parcelado: mudar a data de uma parcela remaneja TODAS as parcelas
+    // do grupo (e as move para a fatura certa).
+    if (
+      body.date &&
+      current.type === 'CARD_EXPENSE' &&
+      current.installmentGroupId &&
+      dbDateToIso(current.competenceDate) !== body.date
+    ) {
+      return this.remapCardInstallmentDates(current, body);
+    }
+
     const row = await this.db.transaction.update({
       where: { id },
       data: {
         description: body.description,
         amount: body.amount != null ? numToBig(body.amount) : undefined,
         competenceDate: body.date ? isoToDbDate(body.date) : undefined,
-        dueDate: body.date ? isoToDbDate(body.date) : undefined,
+        // `dueDate` explícito manda; senão acompanha a competência quando ela muda.
+        dueDate: body.dueDate
+          ? isoToDbDate(body.dueDate)
+          : body.date
+            ? isoToDbDate(body.date)
+            : undefined,
         categoryId: body.categoryId === '' ? null : body.categoryId,
         accountId: body.accountId,
         status: body.status,
         paidDate:
           body.paidDate === null ? null : body.paidDate ? isoToDbDate(body.paidDate) : undefined,
+        paidAmount: body.paidAmount != null ? numToBig(body.paidAmount) : undefined,
         notes: body.notes,
         tags: body.tags,
         placeId: body.placeId === '' ? null : body.placeId,
@@ -462,6 +546,67 @@ export class TransactionsService {
     });
     if (row.invoiceId) await recalcInvoiceTotal(this.db, row.invoiceId);
     return this.present(row);
+  }
+
+  /**
+   * Recalcula a fatura/vencimento de cada parcela de uma compra parcelada no
+   * cartão a partir da nova data. `body.date` é a nova competência da parcela
+   * editada; as demais deslizam pela mesma âncora.
+   */
+  private async remapCardInstallmentDates(
+    current: { id: string; userId: string; installmentGroupId: string | null; installmentNumber: number | null; creditCardId: string | null },
+    body: UpdateTransactionBody,
+  ) {
+    const card = await this.db.creditCard.findFirst({
+      where: { id: current.creditCardId ?? '', userId: current.userId },
+    });
+    if (!card) throw Errors.badRequest('Cartão inválido');
+    const cycle = { closingDay: card.closingDay, dueDay: card.dueDay };
+
+    const items = await this.db.transaction.findMany({
+      where: { userId: current.userId, installmentGroupId: current.installmentGroupId! },
+      orderBy: { installmentNumber: 'asc' },
+    });
+    if (items.length === 0) throw Errors.notFound('Parcelas');
+
+    // Âncora = data da 1ª parcela, derivada da nova data da parcela editada.
+    const editedIdx = Math.max(0, (current.installmentNumber ?? 1) - 1);
+    const anchor = addMonths(body.date!, -editedIdx);
+    const placements = invoicesForInstallments(anchor, items.length, cycle);
+
+    const touchedInvoices = new Set<string>(
+      items.map((it) => it.invoiceId).filter((v): v is string => !!v),
+    );
+
+    const rows = await this.db.$transaction(async (tx) => {
+      const out = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]!;
+        const placement = placements[i]!;
+        const invoice = await ensureInvoice(tx, {
+          userId: current.userId,
+          creditCardId: card.id,
+          referenceMonth: placement.referenceMonth,
+          cycle,
+        });
+        touchedInvoices.add(invoice.id);
+        out.push(
+          await tx.transaction.update({
+            where: { id: it.id },
+            data: {
+              competenceDate: invoice.dueDate,
+              dueDate: invoice.dueDate,
+              invoiceId: invoice.id,
+            },
+          }),
+        );
+      }
+      return out;
+    });
+
+    for (const invId of touchedInvoices) await recalcInvoiceTotal(this.db, invId);
+    const mine = rows.find((r) => r.id === current.id) ?? rows[0]!;
+    return this.present(mine);
   }
 
   /** Pula/cancela uma ocorrência (ex.: "esse mês não teve"). */
@@ -476,39 +621,60 @@ export class TransactionsService {
     return this.present(row);
   }
 
-  /** Liquida vários lançamentos na mesma data. */
+  /** Liquida vários lançamentos na mesma data (quita por completo). */
   async bulkPay(scope: { userId?: string }, ids: string[], paidDate: string) {
     const rows = await this.db.transaction.findMany({
       where: {
         id: { in: ids },
         ...(scope.userId ? { userId: scope.userId } : {}),
-        status: { in: ['PENDING', 'SCHEDULED'] },
+        status: { in: ['PENDING', 'SCHEDULED', 'PARTIAL'] },
       },
       select: { id: true, invoiceId: true },
     });
     if (rows.length === 0) return { paid: 0 };
+    const paidIds = rows.map((r) => r.id);
     await this.db.transaction.updateMany({
-      where: { id: { in: rows.map((r) => r.id) } },
+      where: { id: { in: paidIds } },
       data: { status: 'PAID', paidDate: isoToDbDate(paidDate) },
     });
+    // quita: paidAmount passa a valer o total (não dá pra referenciar coluna no updateMany)
+    await this.db.$executeRaw`UPDATE "transactions" SET "paidAmount" = "amount" WHERE "id" IN (${Prisma.join(paidIds)})`;
     const invoiceIds = [...new Set(rows.map((r) => r.invoiceId).filter((v): v is string => !!v))];
     for (const invId of invoiceIds) await recalcInvoiceTotal(this.db, invId);
     return { paid: rows.length };
   }
 
+  /**
+   * Liquida um lançamento. Sem `body.amount` (ou com valor >= saldo devedor)
+   * quita de vez (status PAID). Com valor menor, registra pagamento PARCIAL:
+   * soma em `paidAmount` e mantém o status PARTIAL até quitar.
+   */
   async markPaid(scope: { userId?: string }, id: string, body: MarkPaidBody) {
     const current = await this.db.transaction.findFirst({
       where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
     });
     if (!current) throw Errors.notFound('Lançamento');
+    if (current.status === 'PAID') throw Errors.badRequest('Lançamento já está quitado.');
+
+    const total = nb(current.amount);
+    const already = nb(current.paidAmount);
+    const owed = Math.max(total - already, 0);
+    const pay = body.amount != null ? body.amount : owed;
+    if (pay <= 0) throw Errors.badRequest('Informe um valor de pagamento maior que zero.');
+
+    const newPaid = Math.min(already + pay, total);
+    const quitado = body.amount == null || newPaid >= total;
+
     const row = await this.db.transaction.update({
       where: { id },
       data: {
-        status: 'PAID',
+        status: quitado ? 'PAID' : 'PARTIAL',
+        paidAmount: numToBig(quitado ? total : newPaid),
         paidDate: isoToDbDate(body.paidDate),
         accountId: body.accountId ?? current.accountId,
       },
     });
+    if (row.invoiceId) await recalcInvoiceTotal(this.db, row.invoiceId);
     return this.present(row);
   }
 
@@ -518,13 +684,25 @@ export class TransactionsService {
     });
     if (!current) throw Errors.notFound('Lançamento');
     const today = todaySP();
+    // Recorrência FIXA volta sempre para PENDENTE (nunca AGENDADO).
+    let fixed = false;
+    if (current.recurrenceId) {
+      const rec = await this.db.recurrence.findUnique({
+        where: { id: current.recurrenceId },
+        select: { mode: true },
+      });
+      fixed = rec?.mode === 'FIXED';
+    }
     const row = await this.db.transaction.update({
       where: { id },
       data: {
-        status: dbDateToIso(current.dueDate) > today ? 'SCHEDULED' : 'PENDING',
+        status:
+          !fixed && dbDateToIso(current.dueDate) > today ? 'SCHEDULED' : 'PENDING',
         paidDate: null,
+        paidAmount: numToBig(0),
       },
     });
+    if (row.invoiceId) await recalcInvoiceTotal(this.db, row.invoiceId);
     return this.present(row);
   }
 
@@ -547,6 +725,24 @@ export class TransactionsService {
       await this.db.transaction.deleteMany({
         where: { userId: ownerId, installmentGroupId: current.installmentGroupId },
       });
+      const invoiceIds = [...new Set(affected.map((a) => a.invoiceId).filter(Boolean))] as string[];
+      for (const inv of invoiceIds) await recalcInvoiceTotal(this.db, inv);
+      return { deleted: affected.length };
+    }
+
+    // scope 'group' numa recorrência FIXA/parcelada avulsa: apaga a série toda
+    // (todas as ocorrências) e a própria regra de recorrência.
+    if (scope === 'group' && current.recurrenceId) {
+      const affected = await this.db.transaction.findMany({
+        where: { userId: ownerId, recurrenceId: current.recurrenceId },
+        select: { id: true, invoiceId: true },
+      });
+      await this.db.transaction.deleteMany({
+        where: { userId: ownerId, recurrenceId: current.recurrenceId },
+      });
+      await this.db.recurrence
+        .delete({ where: { id: current.recurrenceId } })
+        .catch(() => undefined);
       const invoiceIds = [...new Set(affected.map((a) => a.invoiceId).filter(Boolean))] as string[];
       for (const inv of invoiceIds) await recalcInvoiceTotal(this.db, inv);
       return { deleted: affected.length };
@@ -580,6 +776,7 @@ export class TransactionsService {
       type: r.type,
       status: r.status,
       amount: nb(r.amount),
+      paidAmount: nb(r.paidAmount ?? 0),
       description: r.description,
       notes: r.notes ?? null,
       tags: r.tags ?? [],

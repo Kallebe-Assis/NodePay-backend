@@ -42,7 +42,12 @@ export const creditCardSchema = z.object({
   archived: z.boolean(),
   createdAt: z.string(),
   // calculado
+  /** soma de TODAS as faturas em aberto/fechadas (gasto acumulado no cartão) */
   openInvoiceTotal: z.number().int(),
+  /** total da PRÓXIMA fatura a vencer (a que o usuário vai pagar primeiro) */
+  nextInvoiceTotal: z.number().int(),
+  /** vencimento dessa próxima fatura (YYYY-MM-DD) — null se não há fatura */
+  nextInvoiceDueDate: isoDateSchema.nullable(),
   availableLimit: z.number().int(),
 });
 export type CreditCard = z.infer<typeof creditCardSchema>;

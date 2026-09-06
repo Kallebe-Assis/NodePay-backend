@@ -30,6 +30,7 @@ export class ChartsService {
       select: {
         type: true,
         amount: true,
+        paidAmount: true,
         status: true,
         description: true,
         competenceDate: true,
@@ -70,8 +71,10 @@ export class ChartsService {
       if (OUT_CASH.includes(t.type)) {
         expense += amt;
         slot.expense += amt;
-        if (t.status === 'PAID') paid += amt;
-        else pending += amt;
+        // PARCIAL divide entre pago (paidAmount) e pendente (o que falta).
+        const paidPart = t.status === 'PAID' ? amt : t.status === 'PARTIAL' ? nb(t.paidAmount) : 0;
+        paid += paidPart;
+        pending += amt - paidPart;
         if (t.recurrenceId) fixed += amt;
         else variable += amt;
       }

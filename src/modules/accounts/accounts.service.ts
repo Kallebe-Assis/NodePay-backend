@@ -87,16 +87,34 @@ export class AccountsService {
   }
 
   /**
-   * Conciliação: cria um lançamento de ajuste (PAGO) para casar o saldo ATUAL
-   * da conta com o `targetBalance` informado. Categoria "Ajuste de saldo"
-   * (criada sob demanda, do tipo certo conforme o sinal do ajuste).
+   * Conciliação do SALDO ATUAL (liquidado) com o `targetBalance` informado.
+   *  - mode 'adjustment' (padrão): cria um lançamento AJUSTE (PAGO) com a
+   *    diferença, mantendo o histórico. Categoria "Ajuste de saldo".
+   *  - mode 'opening': soma a diferença no saldo inicial da conta, sem gerar
+   *    lançamento (útil quando o saldo inicial é que estava errado).
    */
   async reconcile(scope: Scope, id: string, body: ReconcileAccountBody) {
     const owner = await this.assertOwner(scope, id);
     const balances = await computeBalances(this.db, { userId: owner }, { accountId: id });
     const current = balances.get(id)?.currentBalance ?? 0;
     const delta = body.targetBalance - current;
-    if (delta === 0) return { adjusted: false, delta: 0, transactionId: null };
+    const mode = body.mode ?? 'adjustment';
+    if (delta === 0) {
+      return { adjusted: false, delta: 0, mode, transactionId: null, openingBalance: null };
+    }
+
+    if (mode === 'opening') {
+      const acc = await this.db.account.findUniqueOrThrow({
+        where: { id },
+        select: { openingBalance: true },
+      });
+      const nextOpening = nb(acc.openingBalance) + delta;
+      await this.db.account.update({
+        where: { id },
+        data: { openingBalance: numToBig(nextOpening) },
+      });
+      return { adjusted: true, delta, mode, transactionId: null, openingBalance: nextOpening };
+    }
 
     const kind = delta > 0 ? 'INCOME' : 'EXPENSE';
     const category = await this.db.category.upsert({
@@ -112,6 +130,7 @@ export class AccountsService {
         userId: owner,
         type: kind === 'INCOME' ? 'INCOME' : 'EXPENSE',
         amount: numToBig(Math.abs(delta)),
+        paidAmount: numToBig(Math.abs(delta)),
         description: body.note?.trim() || 'Ajuste de saldo (conciliação)',
         competenceDate: date,
         dueDate: date,
@@ -121,7 +140,7 @@ export class AccountsService {
         categoryId: category.id,
       },
     });
-    return { adjusted: true, delta, transactionId: tx.id };
+    return { adjusted: true, delta, mode, transactionId: tx.id, openingBalance: null };
   }
 
   async remove(scope: Scope, id: string) {

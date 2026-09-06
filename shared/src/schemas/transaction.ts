@@ -50,7 +50,12 @@ export const accountEntryBodySchema = z.object({
   direction: z.enum(['expense', 'income']),
   amount: centsSchema,
   description: z.string().min(1, 'Informe uma descrição').max(160),
-  date: isoDateSchema, // data de competência
+  date: isoDateSchema, // data de competência (data do lançamento)
+  /**
+   * Data do pagamento. Se `paid`, é a data em que liquidou; se pendente, é a
+   * data de pagamento planejada (vencimento). Ausente => usa `date`.
+   */
+  paymentDate: isoDateSchema.optional(),
   accountId: z.string().min(1, 'Selecione a conta'),
   /** opcional — lançamento sem categoria fica em "Sem categoria" */
   categoryId: z.string().optional(),
@@ -73,6 +78,12 @@ export const cardEntryBodySchema = z.object({
   /** opcional — lançamento sem categoria fica em "Sem categoria" */
   categoryId: z.string().optional(),
   installments: z.number().int().min(1).max(60).default(1),
+  /**
+   * Como interpretar `amount` quando há 2+ parcelas:
+   *  - false (padrão): `amount` é o TOTAL da compra, dividido entre as parcelas
+   *  - true: `amount` é o valor de CADA parcela (total = amount × installments)
+   */
+  amountIsPerInstallment: z.boolean().optional(),
   ...optionalExtras,
 });
 export type CardEntryBody = z.infer<typeof cardEntryBodySchema>;
@@ -100,12 +111,16 @@ export type CreateTransactionBody = z.infer<typeof createTransactionBodySchema>;
 export const updateTransactionBodySchema = z.object({
   description: z.string().min(1).max(160).optional(),
   amount: centsSchema.optional(),
-  date: isoDateSchema.optional(),
+  date: isoDateSchema.optional(), // competência (data do lançamento)
+  /** data de pagamento planejada (vencimento) — usada quando ainda não pago */
+  dueDate: isoDateSchema.optional(),
   /** string vazia = remover a categoria */
   categoryId: z.string().optional(),
   accountId: z.string().optional(),
   status: transactionStatusSchema.optional(),
   paidDate: isoDateSchema.nullable().optional(),
+  /** quanto já foi pago (centavos, 0+) — em conjunto com status PARTIAL */
+  paidAmount: z.number().int().nonnegative().optional(),
   notes: notesSchema.nullable().optional(),
   tags: z.array(tagSchema).max(10).optional(),
   /** string vazia = remover o local de compra */
@@ -118,6 +133,12 @@ export type UpdateTransactionBody = z.infer<typeof updateTransactionBodySchema>;
 export const markPaidBodySchema = z.object({
   paidDate: isoDateSchema,
   accountId: z.string().optional(), // se quiser liquidar por outra conta
+  /**
+   * Pagamento parcial: valor pago agora (centavos). Se ausente ou >= saldo
+   * devedor, quita o lançamento (status PAID). Caso contrário, soma em
+   * `paidAmount` e o status vira PARTIAL.
+   */
+  amount: centsSchema.optional(),
 });
 export type MarkPaidBody = z.infer<typeof markPaidBodySchema>;
 
@@ -141,14 +162,42 @@ export const listTransactionsQuerySchema = paginationQuerySchema.extend({
   search: z.string().max(120).optional(),
   /** admin: filtrar por dono (ignorado para usuários comuns) */
   userId: z.string().optional(),
+  /** ordenação da lista */
+  sortBy: z
+    .enum([
+      'createdAt',
+      'competenceDate',
+      'dueDate',
+      'paidDate',
+      'amount',
+      'description',
+      'status',
+      'account',
+      'category',
+    ])
+    .default('createdAt'),
+  sortDir: z.enum(['asc', 'desc']).default('desc'),
 });
 export type ListTransactionsQuery = z.infer<typeof listTransactionsQuerySchema>;
+
+/** Totais do conjunto filtrado (não só a página) — rodapé da tela de Lançamentos. */
+export const transactionListTotalsSchema = z.object({
+  count: z.number().int(),
+  incomeCount: z.number().int(),
+  expenseCount: z.number().int(),
+  income: z.number().int(), // soma das receitas (centavos)
+  expense: z.number().int(), // soma das despesas (centavos)
+  net: z.number().int(), // income - expense
+});
+export type TransactionListTotals = z.infer<typeof transactionListTotalsSchema>;
 
 export const transactionSchema = z.object({
   id: z.string(),
   type: transactionTypeSchema,
   status: transactionStatusSchema,
   amount: z.number().int(),
+  /** quanto já foi liquidado (centavos). 0, salvo em status PARTIAL/PAID */
+  paidAmount: z.number().int(),
   description: z.string(),
   competenceDate: isoDateSchema,
   dueDate: isoDateSchema,

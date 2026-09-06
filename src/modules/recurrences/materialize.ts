@@ -76,7 +76,9 @@ export async function materializeFixedRecurrences(
             competenceDate: isoToDbDate(cursor),
             dueDate: isoToDbDate(cursor),
             paidDate: null,
-            status: cursor > today ? 'SCHEDULED' : 'PENDING',
+            // Recorrência FIXA nasce sempre PENDENTE — o usuário confirma cada
+            // pagamento (data + valor total/parcial).
+            status: 'PENDING',
             accountId: rec.accountId,
             categoryId: rec.categoryId,
             recurrenceId: rec.id,

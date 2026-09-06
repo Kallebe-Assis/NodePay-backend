@@ -2,6 +2,9 @@ import type { PrismaClient } from '@prisma/client';
 import type { CreateCreditCardBody, UpdateCreditCardBody } from '@nodepay/shared';
 import { Errors } from '../../lib/errors.js';
 import { nb, numToBig } from '../../lib/money.js';
+import { dbDateToIso } from '../../lib/date.js';
+
+type NextInvoice = { total: number; dueDate: string } | null;
 
 type Scope = { userId?: string };
 
@@ -22,7 +25,21 @@ export class CreditCardsService {
     });
     const openByCard = new Map(totals.map((t) => [t.creditCardId, nb(t._sum.total)]));
 
-    return cards.map((c) => this.present(c, openByCard.get(c.id) ?? 0));
+    // "próxima fatura" = a não-paga que vence primeiro (por cartão)
+    const upcoming = await this.db.invoice.findMany({
+      where: { ...userWhere, status: { in: ['OPEN', 'CLOSED'] } },
+      orderBy: { dueDate: 'asc' },
+      select: { creditCardId: true, total: true, dueDate: true },
+    });
+    const nextByCard = new Map<string, NextInvoice>();
+    for (const inv of upcoming) {
+      if (nextByCard.has(inv.creditCardId)) continue;
+      nextByCard.set(inv.creditCardId, { total: nb(inv.total), dueDate: dbDateToIso(inv.dueDate) });
+    }
+
+    return cards.map((c) =>
+      this.present(c, openByCard.get(c.id) ?? 0, nextByCard.get(c.id) ?? null),
+    );
   }
 
   async get(scope: Scope, id: string) {
@@ -34,7 +51,16 @@ export class CreditCardsService {
       where: { creditCardId: id, status: { in: ['OPEN', 'CLOSED'] } },
       _sum: { total: true },
     });
-    return this.present(card, nb(agg._sum.total));
+    const next = await this.db.invoice.findFirst({
+      where: { creditCardId: id, status: { in: ['OPEN', 'CLOSED'] } },
+      orderBy: { dueDate: 'asc' },
+      select: { total: true, dueDate: true },
+    });
+    return this.present(
+      card,
+      nb(agg._sum.total),
+      next ? { total: nb(next.total), dueDate: dbDateToIso(next.dueDate) } : null,
+    );
   }
 
   async create(ownerId: string, body: CreateCreditCardBody) {
@@ -54,7 +80,7 @@ export class CreditCardsService {
         archived: body.archived ?? false,
       },
     });
-    return this.present(card, 0);
+    return this.present(card, 0, null);
   }
 
   async update(scope: Scope, id: string, body: UpdateCreditCardBody) {
@@ -105,7 +131,7 @@ export class CreditCardsService {
     if (!ok) throw Errors.notFound('Cartão');
   }
 
-  private present(c: any, openInvoiceTotal: number) {
+  private present(c: any, openInvoiceTotal: number, next: NextInvoice) {
     const limit = nb(c.creditLimit);
     return {
       id: c.id,
@@ -121,6 +147,8 @@ export class CreditCardsService {
       archived: c.archived,
       createdAt: c.createdAt.toISOString(),
       openInvoiceTotal,
+      nextInvoiceTotal: next?.total ?? 0,
+      nextInvoiceDueDate: next?.dueDate ?? null,
       availableLimit: Math.max(limit - openInvoiceTotal, 0),
     };
   }
