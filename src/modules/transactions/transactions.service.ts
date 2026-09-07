@@ -316,9 +316,11 @@ export class TransactionsService {
           ? { type: { in: EXPENSE_FLOW } }
           : q.flow === 'income'
             ? { type: { in: INCOME_FLOW } }
-            : // livro-razão comum não mostra transferências (elas têm tela própria);
-              // o saldo das contas já é ajustado por computeBalances.
-              { type: { not: 'TRANSFER' } }),
+            : q.flow === 'card'
+              ? { type: 'CARD_EXPENSE' }
+              : // livro-razão comum não mostra transferências (elas têm tela própria);
+                // o saldo das contas já é ajustado por computeBalances.
+                { type: { not: 'TRANSFER' } }),
       ...(q.status ? { status: q.status } : {}),
       ...(q.minAmount != null || q.maxAmount != null
         ? {

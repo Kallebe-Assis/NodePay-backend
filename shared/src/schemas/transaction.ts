@@ -155,8 +155,8 @@ export const listTransactionsQuerySchema = paginationQuerySchema.extend({
   tag: z.string().optional(),
   type: transactionTypeSchema.optional(),
   status: transactionStatusSchema.optional(),
-  /** filtro de sentido: todos / despesas / receitas */
-  flow: z.enum(['all', 'expense', 'income']).optional(),
+  /** filtro rápido: todos / despesas / receitas / compras no cartão */
+  flow: z.enum(['all', 'expense', 'income', 'card']).optional(),
   minAmount: z.coerce.number().int().nonnegative().optional(), // centavos
   maxAmount: z.coerce.number().int().nonnegative().optional(),
   search: z.string().max(120).optional(),
