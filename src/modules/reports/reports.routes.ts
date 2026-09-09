@@ -9,7 +9,7 @@ import {
 } from '@nodepay/shared';
 import { ReportsService } from './reports.service.js';
 import { ChartsService } from './charts.service.js';
-import { deliverDocument } from '../telegram/telegram.service.js';
+import { sendMessage } from '../telegram/telegram.service.js';
 import { ownerFilter, targetOwnerId } from '../../lib/scope.js';
 
 /**
@@ -54,9 +54,10 @@ export async function reportRoutes(fastify: FastifyInstance) {
     },
   );
 
-  // ---- POST /telegram — gera o mesmo relatório e envia pelo bot do Telegram ----
-  // Diferente do /generate, aqui o erro de entrega (chat não vinculado, token
-  // ausente, etc.) sobe como 400 para o usuário ver o motivo.
+  // ---- POST /telegram — envia o relatório como MENSAGEM de texto pelo bot ----
+  // Diferente do /generate (que baixa arquivo), aqui vai um resumo em texto no
+  // chat. Erro de entrega (chat não vinculado, token ausente, etc.) sobe como
+  // 400 para o usuário ver o motivo.
   app.post(
     '/telegram',
     {
@@ -68,9 +69,9 @@ export async function reportRoutes(fastify: FastifyInstance) {
     },
     async (req) => {
       const ownerId = targetOwnerId(req, req.body.userId);
-      const report = await new ReportsService(app.db()).generate(ownerId, req.body);
-      await deliverDocument(app.db(), ownerId, report);
-      return { delivered: true as const, filename: report.filename };
+      const { text, label } = await new ReportsService(app.db()).generateText(ownerId, req.body);
+      await sendMessage(app.db(), ownerId, text);
+      return { delivered: true as const, filename: label };
     },
   );
 }

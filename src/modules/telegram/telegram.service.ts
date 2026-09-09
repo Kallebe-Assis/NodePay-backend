@@ -2,7 +2,6 @@ import type { PrismaClient } from '@prisma/client';
 import { env } from '../../config/env.js';
 import { Errors } from '../../lib/errors.js';
 import { decryptSecret } from '../../lib/crypto.js';
-import type { GeneratedReport } from '../reports/reports.service.js';
 
 /**
  * Integração mínima com o Telegram.
@@ -12,7 +11,7 @@ import type { GeneratedReport } from '../reports/reports.service.js';
  * do ambiente. O chat pode ser pareado (`/vincular <token>`) ou informado
  * direto pelo usuário (Chat ID).
  */
-type BotApi = { sendMessage: Function; sendDocument: Function };
+type BotApi = { sendMessage: Function };
 const apiCache = new Map<string, BotApi>();
 
 async function getBotApi(token: string): Promise<BotApi> {
@@ -80,11 +79,3 @@ export async function sendTestMessage(
   }
 }
 
-export async function deliverDocument(db: PrismaClient, userId: string, report: GeneratedReport) {
-  const { token, chatId } = await resolveTelegram(db, userId);
-  const api = await getBotApi(token);
-  const { InputFile } = await import('grammy');
-  await api.sendDocument(chatId, new InputFile(report.body, report.filename), {
-    caption: 'Relatório NodePay',
-  });
-}

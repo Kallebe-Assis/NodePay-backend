@@ -188,6 +188,12 @@ export const transactionListTotalsSchema = z.object({
   income: z.number().int(), // soma das receitas (centavos)
   expense: z.number().int(), // soma das despesas (centavos)
   net: z.number().int(), // income - expense
+  /** resultado líquido (receitas − despesas) já liquidado */
+  paid: z.number().int(),
+  /** resultado líquido ainda pendente (inclui a parte não paga do PARCIAL) */
+  pending: z.number().int(),
+  /** resultado líquido agendado para o futuro */
+  scheduled: z.number().int(),
 });
 export type TransactionListTotals = z.infer<typeof transactionListTotalsSchema>;
 

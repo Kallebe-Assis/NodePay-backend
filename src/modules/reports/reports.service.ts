@@ -97,6 +97,122 @@ export class ReportsService {
     };
   }
 
+  /**
+   * Versão do relatório em **texto** (HTML do Telegram) — para enviar como
+   * mensagem no chat em vez de arquivo. Sempre abaixo do limite de 4096 chars.
+   */
+  async generateText(
+    userId: string,
+    q: GenerateReportQuery,
+  ): Promise<{ text: string; label: string }> {
+    const periodo = `${formatShortDate(q.from as never)} — ${formatShortDate(q.to as never)}`;
+    let label: string;
+    let body: string;
+
+    if (q.kind === 'monthly') {
+      label = 'Fechamento mensal';
+      const txns = await this.db.transaction.findMany({
+        where: {
+          userId,
+          status: { not: 'CANCELED' },
+          competenceDate: { gte: isoToDbDate(q.from), lte: isoToDbDate(q.to) },
+        },
+        select: { amount: true, type: true, competenceDate: true },
+      });
+      const inc = new Map<string, number>();
+      const exp = new Map<string, number>();
+      for (const t of txns) {
+        const m = dbDateToIso(t.competenceDate).slice(0, 7);
+        if (INFLOW_TYPES.includes(t.type)) inc.set(m, (inc.get(m) ?? 0) + nb(t.amount));
+        else if (OUTFLOW_TYPES.includes(t.type)) exp.set(m, (exp.get(m) ?? 0) + nb(t.amount));
+      }
+      const rows = this.monthsInRange(q.from, q.to).map((m) => {
+        const i = inc.get(m) ?? 0;
+        const e = exp.get(m) ?? 0;
+        return { m, i, e, net: i - e };
+      });
+      const tot = rows.reduce((a, r) => ({ i: a.i + r.i, e: a.e + r.e, net: a.net + r.net }), {
+        i: 0,
+        e: 0,
+        net: 0,
+      });
+      body =
+        `<i>receitas · despesas · resultado</i>\n` +
+        rows
+          .map(
+            (r) =>
+              `<b>${r.m}</b>  ${formatBRL(r.i)} · ${formatBRL(r.e)} · ${signBRL(r.net)}`,
+          )
+          .join('\n') +
+        `\n\n<b>Total</b>  ${formatBRL(tot.i)} · ${formatBRL(tot.e)} · ${signBRL(tot.net)}`;
+    } else if (q.kind === 'by-category') {
+      label = 'Gasto por categoria';
+      const txns = await this.db.transaction.findMany({
+        where: {
+          userId,
+          status: { not: 'CANCELED' },
+          competenceDate: { gte: isoToDbDate(q.from), lte: isoToDbDate(q.to) },
+          ...(q.accountId ? { accountId: q.accountId } : {}),
+          ...(q.creditCardId ? { creditCardId: q.creditCardId } : {}),
+        },
+        select: { amount: true, type: true, category: { select: { name: true } } },
+      });
+      const expByCat = new Map<string, number>();
+      const incByCat = new Map<string, number>();
+      for (const t of txns) {
+        const name = t.category?.name ?? 'Sem categoria';
+        if (OUTFLOW_TYPES.includes(t.type))
+          expByCat.set(name, (expByCat.get(name) ?? 0) + nb(t.amount));
+        else if (INFLOW_TYPES.includes(t.type))
+          incByCat.set(name, (incByCat.get(name) ?? 0) + nb(t.amount));
+      }
+      const top = (m: Map<string, number>, n: number) =>
+        [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
+      const expTotal = [...expByCat.values()].reduce((s, v) => s + v, 0);
+      const incTotal = [...incByCat.values()].reduce((s, v) => s + v, 0);
+      const dump = (title: string, rows: [string, number][], total: number) =>
+        `<b>${escapeHtml(title)}</b>\n` +
+        (rows.length
+          ? rows.map(([c, v]) => `• ${escapeHtml(c)} — ${formatBRL(v)}`).join('\n')
+          : '<i>nada no período</i>') +
+        `\n<b>Total ${formatBRL(total)}</b>`;
+      body = `${dump('Despesas por categoria', top(expByCat, 12), expTotal)}\n\n${dump(
+        'Receitas por categoria',
+        top(incByCat, 6),
+        incTotal,
+      )}`;
+    } else {
+      label = 'Extrato de lançamentos';
+      const rows = await this.loadStatement(userId, q);
+      const totalIn = rows.filter((r) => r.amount > 0).reduce((s, r) => s + r.amount, 0);
+      const totalOut = rows.filter((r) => r.amount < 0).reduce((s, r) => s + r.amount, 0);
+      const top = [...rows]
+        .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount))
+        .slice(0, 15);
+      body =
+        `<b>${rows.length}</b> lançamento(s)\n` +
+        `Entradas: ${formatBRL(totalIn)}\n` +
+        `Saídas: ${formatBRL(totalOut)}\n` +
+        `Saldo: ${signBRL(totalIn + totalOut)}\n\n` +
+        `<b>Maiores lançamentos</b>\n` +
+        top
+          .map(
+            (r) =>
+              `• ${escapeHtml(r.description)} — ${signBRL(r.amount)}` +
+              (r.category ? ` <i>(${escapeHtml(r.category)})</i>` : ''),
+          )
+          .join('\n') +
+        (rows.length > top.length ? `\n… e mais ${rows.length - top.length} lançamento(s)` : '');
+    }
+
+    let text = `📊 <b>${label}</b>\n${periodo}\n\n${body}\n\n<i>NodePay · gerado em ${formatShortDate(
+      todaySP(),
+    )}</i>`;
+    // Telegram: limite de 4096 chars por mensagem.
+    if (text.length > 3900) text = text.slice(0, 3880) + '\n…';
+    return { text, label };
+  }
+
   /** Meses "YYYY-MM" entre from e to (inclusive). */
   private monthsInRange(from: string, to: string): string[] {
     const out: string[] = [];
@@ -315,6 +431,12 @@ function escapeHtml(s: string): string {
 /** centavos → "1234,56" (para célula de CSV pt-BR). */
 function centsBR(cents: number): string {
   return (cents / 100).toFixed(2).replace('.', ',');
+}
+
+/** "R$ 1.234,56" com sinal explícito (+/−) — usado nos textos do Telegram. */
+function signBRL(cents: number): string {
+  const s = cents < 0 ? '−' : '+';
+  return `${s} ${formatBRL(Math.abs(cents))}`;
 }
 
 /** HTML de um relatório genérico (tabelas livres) para impressão em PDF. */

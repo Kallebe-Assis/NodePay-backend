@@ -2,6 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import {
+  bulkCreatePlacesBodySchema,
+  bulkCreatePlacesResponseSchema,
   createPlaceBodySchema,
   listPlacesQuerySchema,
   placeSchema,
@@ -46,6 +48,19 @@ export async function placeRoutes(fastify: FastifyInstance) {
     },
     async (req, reply) =>
       reply.code(201).send(await svc().create(targetOwnerId(req, req.query.userId), req.body)),
+  );
+
+  app.post(
+    '/bulk',
+    {
+      schema: {
+        tags: ['places'],
+        querystring: z.object({ userId: z.string().optional() }),
+        body: bulkCreatePlacesBodySchema,
+        response: { 200: bulkCreatePlacesResponseSchema },
+      },
+    },
+    (req) => svc().bulkCreate(targetOwnerId(req, req.query.userId), req.body),
   );
 
   app.patch(

@@ -1,5 +1,10 @@
 import type { PrismaClient, TransactionType } from '@prisma/client';
-import type { CreatePlaceBody, ListPlacesQuery, UpdatePlaceBody } from '@nodepay/shared';
+import type {
+  BulkCreatePlacesBody,
+  CreatePlaceBody,
+  ListPlacesQuery,
+  UpdatePlaceBody,
+} from '@nodepay/shared';
 import { endOfMonth, startOfMonth, todaySP, type IsoDate } from '@nodepay/shared';
 import { Errors } from '../../lib/errors.js';
 import { nb } from '../../lib/money.js';
@@ -71,6 +76,35 @@ export class PlacesService {
       include: { _count: { select: { transactions: true } } },
     });
     return this.present(row);
+  }
+
+  /**
+   * Cadastro em massa: recebe uma lista de nomes e cria os que ainda não
+   * existem (comparação sem diferenciar maiúsc./acentos não — só `trim` +
+   * case-insensitive). Duplicados na própria lista contam como "skipped".
+   */
+  async bulkCreate(ownerId: string, body: BulkCreatePlacesBody) {
+    const existing = await this.db.place.findMany({
+      where: { userId: ownerId },
+      select: { name: true },
+    });
+    const seen = new Set(existing.map((p) => p.name.trim().toLowerCase()));
+
+    const toCreate: string[] = [];
+    for (const raw of body.names) {
+      const name = raw.trim();
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      toCreate.push(name);
+    }
+
+    if (toCreate.length > 0) {
+      await this.db.place.createMany({
+        data: toCreate.map((name) => ({ userId: ownerId, name })),
+      });
+    }
+    return { created: toCreate.length, skipped: body.names.length - toCreate.length };
   }
 
   async update(scope: Scope, id: string, body: UpdatePlaceBody) {

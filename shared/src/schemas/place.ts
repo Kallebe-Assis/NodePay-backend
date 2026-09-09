@@ -21,6 +21,18 @@ export type CreatePlaceBody = z.infer<typeof createPlaceBodySchema>;
 export const updatePlaceBodySchema = createPlaceBodySchema.partial();
 export type UpdatePlaceBody = z.infer<typeof updatePlaceBodySchema>;
 
+/** Cadastro em massa: uma lista de nomes (só a descrição). Ignora duplicados. */
+export const bulkCreatePlacesBodySchema = z.object({
+  names: z.array(z.string().trim().min(1).max(80)).min(1).max(300),
+});
+export type BulkCreatePlacesBody = z.infer<typeof bulkCreatePlacesBodySchema>;
+
+export const bulkCreatePlacesResponseSchema = z.object({
+  created: z.number().int(),
+  skipped: z.number().int(), // já existiam (mesmo nome) ou repetidos na lista
+});
+export type BulkCreatePlacesResponse = z.infer<typeof bulkCreatePlacesResponseSchema>;
+
 export const placeSchema = z.object({
   id: z.string(),
   name: z.string(),

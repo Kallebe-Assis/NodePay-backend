@@ -229,9 +229,10 @@ export class TransactionsService {
               body.installments > 1
                 ? `${body.description} (${i + 1}/${body.installments})`
                 : body.description,
-            // A parcela "conta" no mês em que a fatura vence (não no mês da compra),
-            // para aparecer no mês certo nas listas e no dashboard.
-            competenceDate: invoice.dueDate,
+            // A parcela "conta" no mês em que a fatura FECHA (não no da compra
+            // nem no do vencimento) — é a competência da fatura para listas e
+            // relatórios. `dueDate` continua sendo o vencimento real.
+            competenceDate: invoice.closingDate,
             dueDate: invoice.dueDate,
             paidDate: null,
             status: 'PENDING',
@@ -377,10 +378,12 @@ export class TransactionsService {
       }),
       this.db.transaction.count({ where }),
       // Totais do conjunto FILTRADO inteiro (não só a página) — rodapé da tela.
+      // Agrupa por tipo × status para tirar num só query: somas por sentido
+      // (receita/despesa) e por status (pago/pendente/agendado).
       this.db.transaction.groupBy({
-        by: ['type'],
+        by: ['type', 'status'],
         where,
-        _sum: { amount: true },
+        _sum: { amount: true, paidAmount: true },
         _count: { _all: true },
       }),
     ]);
@@ -389,15 +392,34 @@ export class TransactionsService {
     let expense = 0;
     let incomeCount = 0;
     let expenseCount = 0;
+    let paid = 0;
+    let pending = 0;
+    let scheduled = 0;
     for (const g of grouped) {
       const sum = nb(g._sum.amount);
-      if (INFLOW_TYPES.includes(g.type)) {
+      const paidPortion = nb(g._sum.paidAmount);
+      const sign = INFLOW_TYPES.includes(g.type) ? 1 : -1;
+
+      if (sign === 1) {
         income += sum;
         incomeCount += g._count._all;
       } else {
         expense += sum;
         expenseCount += g._count._all;
       }
+
+      // resultado líquido por status (receita soma, despesa subtrai)
+      if (g.status === 'PAID') {
+        paid += sign * sum;
+      } else if (g.status === 'PARTIAL') {
+        paid += sign * paidPortion;
+        pending += sign * (sum - paidPortion);
+      } else if (g.status === 'SCHEDULED') {
+        scheduled += sign * sum;
+      } else if (g.status === 'PENDING') {
+        pending += sign * sum;
+      }
+      // CANCELED não entra em nenhum bucket de status
     }
 
     return {
@@ -405,7 +427,17 @@ export class TransactionsService {
       page: q.page,
       pageSize: q.pageSize,
       total,
-      totals: { count: total, incomeCount, expenseCount, income, expense, net: income - expense },
+      totals: {
+        count: total,
+        incomeCount,
+        expenseCount,
+        income,
+        expense,
+        net: income - expense,
+        paid,
+        pending,
+        scheduled,
+      },
     };
   }
 
@@ -596,7 +628,7 @@ export class TransactionsService {
           await tx.transaction.update({
             where: { id: it.id },
             data: {
-              competenceDate: invoice.dueDate,
+              competenceDate: invoice.closingDate, // competência = fechamento da fatura
               dueDate: invoice.dueDate,
               invoiceId: invoice.id,
             },
