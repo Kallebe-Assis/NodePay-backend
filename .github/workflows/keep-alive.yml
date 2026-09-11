@@ -1,0 +1,34 @@
+name: Keep API warm
+
+# Faz um ping periódico em /ready pra evitar o "cold start" do plano free do
+# Render (que hiberna a instância depois de ~15 min sem tráfego — o próximo
+# acesso real, aí sim, espera 30-60s pelo servidor "acordar"). Não substitui
+# um plano sempre-ligado, só reduz a chance de alguém pegar a instância fria.
+#
+# Configuração necessária (uma vez): Settings → Secrets and variables →
+# Actions → New repository secret:
+#   nome:  API_HEALTH_URL
+#   valor: https://SEU-BACKEND.onrender.com/ready
+#
+# Sem esse secret, o job só avisa e sai (não quebra o workflow).
+#
+# GitHub desativa workflows agendados depois de 60 dias sem NENHUMA atividade
+# no repositório — se isso acontecer, reative em Actions → Keep API warm →
+# "Enable workflow".
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /ready
+        run: |
+          if [ -z "${{ secrets.API_HEALTH_URL }}" ]; then
+            echo "Secret API_HEALTH_URL não definido — nada a fazer. Veja o comentário no topo deste arquivo."
+            exit 0
+          fi
+          curl -fsS --max-time 25 "${{ secrets.API_HEALTH_URL }}" && echo "" && echo "ok"
