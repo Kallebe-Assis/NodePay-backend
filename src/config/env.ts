@@ -44,8 +44,6 @@ const schema = z.object({
    */
   CRON_SECRET: z.string().optional(),
 
-  PUPPETEER_EXECUTABLE_PATH: z.string().optional(),
-
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_BOT_ENABLED: booleanish(false),
 

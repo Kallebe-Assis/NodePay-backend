@@ -117,10 +117,9 @@ Módulos: `health`, `auth`, `users`, `accounts`, `categories`, `transactions`,
 
 ## PDF
 
-`modules/reports/pdf.ts` usa `puppeteer-core` apontando para um Chrome/Edge/
-Chromium **já instalado**, descoberto por `modules/reports/chromium.ts`. Só
-defina `PUPPETEER_EXECUTABLE_PATH` se o navegador estiver num caminho incomum.
-Em serverless, troque por `@sparticuz/chromium`.
+`modules/reports/pdf.ts` desenha o PDF direto com `pdfkit` (texto, tabelas,
+paginação) — sem navegador nenhum. Roda igual em qualquer ambiente, inclusive
+Render/serverless, sem instalar/baixar Chrome nem configurar nada.
 
 ## Deploy — pontos de atenção
 

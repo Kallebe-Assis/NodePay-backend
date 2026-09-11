@@ -11,7 +11,7 @@ import {
 import { nb } from '../../lib/money.js';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
 import { buildStatementCsv, type StatementRow } from './csv.js';
-import { renderPdf, statementHtml } from './pdf.js';
+import { renderPdf, type PdfTableSection } from './pdf.js';
 
 /** Rótulo humano de cada tipo de lançamento, usado nas colunas do relatório. */
 const TYPE_LABEL: Record<string, string> = {
@@ -22,6 +22,15 @@ const TYPE_LABEL: Record<string, string> = {
   INVOICE_PAYMENT: 'Pagamento de fatura',
   LOAN_DISBURSEMENT: 'Empréstimo (crédito)',
   LOAN_INSTALLMENT: 'Parcela de empréstimo',
+};
+
+/** Rótulo humano de cada status, usado nas colunas do PDF/CSV. */
+const STATUS_LABEL: Record<string, string> = {
+  PENDING: 'Pendente',
+  SCHEDULED: 'Agendado',
+  PARTIAL: 'Parcial',
+  PAID: 'Pago',
+  CANCELED: 'Cancelado',
 };
 
 /** Arquivo pronto para download ou envio (o `body` já é o conteúdo final). */
@@ -60,41 +69,45 @@ export class ReportsService {
       };
     }
 
-    // 3) PDF: monta as linhas e o rodapé de totais em HTML e renderiza.
+    // 3) PDF: uma tabela com o rodapé de totais.
     const totalIn = rows.filter((r) => r.amount > 0).reduce((s, r) => s + r.amount, 0);
     const totalOut = rows.filter((r) => r.amount < 0).reduce((s, r) => s + r.amount, 0);
 
-    const bodyRows = rows
-      .map(
-        (r) => `<tr>
-        <td>${formatShortDate(r.competenceDate as any)}</td>
-        <td>${escapeHtml(r.description)}</td>
-        <td>${escapeHtml(r.category)}</td>
-        <td>${escapeHtml(r.account)}</td>
-        <td>${r.status}</td>
-        <td class="num ${r.amount < 0 ? 'neg' : ''}">${formatBRL(r.amount)}</td>
-      </tr>`,
-      )
-      .join('');
-
-    const totalsRow = `<tr>
-      <td colspan="5">Entradas ${formatBRL(totalIn)} · Saídas ${formatBRL(totalOut)}</td>
-      <td class="num">${formatBRL(totalIn + totalOut)}</td>
-    </tr>`;
-
-    const html = statementHtml({
+    const body = await renderPdf({
       title: 'Extrato NodePay',
-      subtitle: `Período de ${formatLongDate(q.from as any)} a ${formatLongDate(q.to as any)}`,
+      subtitle: `Período de ${formatLongDate(q.from as never)} a ${formatLongDate(q.to as never)}`,
       generatedAt: formatShortDate(todaySP()),
-      bodyRows,
-      totalsRow,
+      sections: [
+        {
+          columns: [
+            { header: 'Competência', width: 1.1 },
+            { header: 'Descrição', width: 2.4 },
+            { header: 'Categoria', width: 1.3 },
+            { header: 'Conta', width: 1.3 },
+            { header: 'Status', width: 1 },
+            { header: 'Valor', width: 1.1, align: 'right' },
+          ],
+          rows: rows.map((r) => [
+            formatShortDate(r.competenceDate as never),
+            r.description,
+            r.category,
+            r.account,
+            STATUS_LABEL[r.status] ?? r.status,
+            formatBRL(r.amount),
+          ]),
+          footRow: [
+            '',
+            `Entradas ${formatBRL(totalIn)} · Saídas ${formatBRL(totalOut)}`,
+            '',
+            '',
+            '',
+            formatBRL(totalIn + totalOut),
+          ],
+        },
+      ],
     });
 
-    return {
-      filename: `${base}.pdf`,
-      contentType: 'application/pdf',
-      body: await renderPdf(html),
-    };
+    return { filename: `${base}.pdf`, contentType: 'application/pdf', body };
   }
 
   /**
@@ -289,28 +302,23 @@ export class ReportsService {
       };
     }
 
-    const table = (s: ReturnType<typeof section>) => `
-      <h2>${escapeHtml(s.title)}</h2>
-      <table><thead><tr>${s.head.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
-      <tbody>
-        ${s.lines
-          .map(
-            (l) =>
-              `<tr><td>${escapeHtml(l.c)}</td>${l.vals
-                .map((v) => `<td class="num">${formatBRL(v)}</td>`)
-                .join('')}<td class="num">${formatBRL(l.total)}</td></tr>`,
-          )
-          .join('')}
-        <tr><td>Total</td>${s.totalRow
-          .map((v) => `<td class="num">${formatBRL(v)}</td>`)
-          .join('')}<td class="num">${formatBRL(s.grand)}</td></tr>
-      </tbody></table>`;
-    const html = genericReportHtml(
-      'Gasto por categoria',
-      `${formatLongDate(q.from as never)} a ${formatLongDate(q.to as never)}`,
-      table(secExp) + table(secInc),
-    );
-    return { filename: `${base}.pdf`, contentType: 'application/pdf', body: await renderPdf(html) };
+    const pdfSection = (s: ReturnType<typeof section>): PdfTableSection => ({
+      heading: s.title,
+      columns: [
+        { header: 'Categoria', width: 1.6 },
+        ...s.head.slice(1, -1).map((h) => ({ header: h, width: 1, align: 'right' as const })),
+        { header: 'Total', width: 1.2, align: 'right' as const },
+      ],
+      rows: s.lines.map((l) => [l.c, ...l.vals.map((v) => formatBRL(v)), formatBRL(l.total)]),
+      footRow: ['Total', ...s.totalRow.map((v) => formatBRL(v)), formatBRL(s.grand)],
+    });
+    const body = await renderPdf({
+      title: 'Gasto por categoria',
+      subtitle: `${formatLongDate(q.from as never)} a ${formatLongDate(q.to as never)}`,
+      generatedAt: formatShortDate(todaySP()),
+      sections: [pdfSection(secExp), pdfSection(secInc)],
+    });
+    return { filename: `${base}.pdf`, contentType: 'application/pdf', body };
   }
 
   /** Relatório "fechamento do mês": receitas, despesas e resultado por mês. */
@@ -356,25 +364,24 @@ export class ReportsService {
       };
     }
 
-    const html = genericReportHtml(
-      'Fechamento mensal',
-      `${formatLongDate(q.from as never)} a ${formatLongDate(q.to as never)}`,
-      `<table><thead><tr><th>Mês</th><th>Receitas</th><th>Despesas</th><th>Resultado</th></tr></thead>
-      <tbody>
-        ${rows
-          .map(
-            (r) =>
-              `<tr><td>${r.m}</td><td class="num">${formatBRL(r.i)}</td><td class="num">${formatBRL(
-                r.e,
-              )}</td><td class="num ${r.net < 0 ? 'neg' : ''}">${formatBRL(r.net)}</td></tr>`,
-          )
-          .join('')}
-        <tr><td>Total</td><td class="num">${formatBRL(tot.i)}</td><td class="num">${formatBRL(
-          tot.e,
-        )}</td><td class="num ${tot.net < 0 ? 'neg' : ''}">${formatBRL(tot.net)}</td></tr>
-      </tbody></table>`,
-    );
-    return { filename: `${base}.pdf`, contentType: 'application/pdf', body: await renderPdf(html) };
+    const body = await renderPdf({
+      title: 'Fechamento mensal',
+      subtitle: `${formatLongDate(q.from as never)} a ${formatLongDate(q.to as never)}`,
+      generatedAt: formatShortDate(todaySP()),
+      sections: [
+        {
+          columns: [
+            { header: 'Mês', width: 1 },
+            { header: 'Receitas', width: 1, align: 'right' },
+            { header: 'Despesas', width: 1, align: 'right' },
+            { header: 'Resultado', width: 1, align: 'right' },
+          ],
+          rows: rows.map((r) => [r.m, formatBRL(r.i), formatBRL(r.e), formatBRL(r.net)]),
+          footRow: ['Total', formatBRL(tot.i), formatBRL(tot.e), formatBRL(tot.net)],
+        },
+      ],
+    });
+    return { filename: `${base}.pdf`, contentType: 'application/pdf', body };
   }
 
   /**
@@ -437,25 +444,4 @@ function centsBR(cents: number): string {
 function signBRL(cents: number): string {
   const s = cents < 0 ? '−' : '+';
   return `${s} ${formatBRL(Math.abs(cents))}`;
-}
-
-/** HTML de um relatório genérico (tabelas livres) para impressão em PDF. */
-function genericReportHtml(title: string, subtitle: string, bodyHtml: string): string {
-  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><style>
-    * { font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
-    body { color: #16204a; font-size: 12px; margin: 0; }
-    h1 { font-size: 18px; margin: 0 0 2px; }
-    h2 { font-size: 14px; margin: 18px 0 6px; }
-    .sub { color: #64748b; margin-bottom: 12px; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { border-bottom: 1px solid #e2e8f0; padding: 5px 7px; text-align: left; }
-    th { background: #f1f5f9; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    td.neg { color: #dc2626; }
-    tbody tr:last-child td { font-weight: 700; border-top: 2px solid #cbd5e1; }
-  </style></head><body>
-    <h1>${escapeHtml(title)}</h1>
-    <div class="sub">${escapeHtml(subtitle)} · gerado em ${formatShortDate(todaySP())}</div>
-    ${bodyHtml}
-  </body></html>`;
 }
