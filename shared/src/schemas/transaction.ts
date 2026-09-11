@@ -27,6 +27,11 @@ export const recurrenceInputSchema = z.discriminatedUnion('mode', [
   z.object({
     mode: z.literal(RecurrenceMode.FIXED),
     frequency: recurrenceFrequencySchema.default(RecurrenceFrequency.MONTHLY),
+    /**
+     * Quantas ocorrências lançar agora. Sem isso, materializa continuamente
+     * (~12 meses / ~52 semanas à frente, estendido pelo job diário).
+     */
+    occurrences: z.number().int().min(1).max(360).optional(),
   }),
 ]);
 export type RecurrenceInput = z.infer<typeof recurrenceInputSchema>;
@@ -127,6 +132,14 @@ export const updateTransactionBodySchema = z.object({
   placeId: z.string().optional(),
   /** Ao editar um item de uma série: alcance da alteração. */
   scope: z.enum(['one', 'forward', 'all']).default('one'),
+  /**
+   * Só relevante quando `date` muda numa parcela (avulsa ou de cartão):
+   *  - true: remaneja a data de TODAS as parcelas do grupo, preservando o
+   *    espaçamento mensal a partir da nova data desta.
+   *  - false/ausente: só esta parcela muda (no cartão, migra para a fatura
+   *    certa; as demais continuam onde estavam).
+   */
+  applyToInstallments: z.boolean().optional(),
 });
 export type UpdateTransactionBody = z.infer<typeof updateTransactionBodySchema>;
 

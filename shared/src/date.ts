@@ -49,6 +49,17 @@ export function addDays(date: IsoDate, days: number): IsoDate {
   return toDateTime(date).plus({ days }).toISODate() as IsoDate;
 }
 
+/** Dia da semana de `date`: 0=domingo … 6=sábado (mesma convenção de `weeklySummaryDay`). */
+export function weekdayOf(date: IsoDate): number {
+  return toDateTime(date).weekday % 7;
+}
+
+/** Primeira data >= `date` cujo dia da semana seja `weekday` (0=domingo…6=sábado). */
+export function nextWeekday(date: IsoDate, weekday: number): IsoDate {
+  const delta = (weekday - weekdayOf(date) + 7) % 7;
+  return addDays(date, delta);
+}
+
 export function startOfMonth(date: IsoDate): IsoDate {
   return toDateTime(date).startOf('month').toISODate() as IsoDate;
 }

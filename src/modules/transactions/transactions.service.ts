@@ -1,15 +1,18 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient, TransactionType } from '@prisma/client';
 import {
+  addDays,
   addMonths,
   type AccountEntryBody,
   type CardEntryBody,
   type CreateTransactionBody,
   distribute,
+  type IsoDate,
   INFLOW_TYPES,
   invoicesForInstallments,
   type ListTransactionsQuery,
   type MarkPaidBody,
+  type RecurrenceFrequency,
   type TransferBody,
   todaySP,
   type UpdateTransactionBody,
@@ -19,8 +22,18 @@ import { nb, numToBig } from '../../lib/money.js';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
 import { ensureInvoice, recalcInvoiceTotal } from '../invoices/invoice.helpers.js';
 
-/** Quantos meses à frente materializamos uma recorrência FIXA na criação. */
-const FIXED_HORIZON_MONTHS = 12;
+/** Quantas ocorrências materializamos de saída (sem `occurrences` explícito) por frequência. */
+const FIXED_HORIZON_MONTHS = 12; // mensal/anual: ~12 ocorrências à frente
+const FIXED_HORIZON_WEEKS = 52; // semanal: ~52 ocorrências (1 ano) à frente
+
+/** Campos mínimos de uma parcela (cartão ou avulsa) para remanejar datas. */
+type InstallmentRow = {
+  id: string;
+  userId: string;
+  installmentGroupId: string | null;
+  installmentNumber: number | null;
+  creditCardId: string | null;
+};
 
 export class TransactionsService {
   constructor(private readonly db: PrismaClient) {}
@@ -140,27 +153,45 @@ export class TransactionsService {
         return { created: n, recurrenceId: rec.id, transactions: rows.map((r) => this.present(r)) };
       }
 
-      // ---- fixo (sem data fim): materializa 12 meses ----
+      // ---- fixo (semanal/mensal/anual — com ou sem quantidade definida) ----
+      const freq = body.recurrence.frequency;
+      const step = (d: IsoDate) => stepByFrequency(d, freq);
+      const requestedCount = body.recurrence.occurrences;
+      // sem quantidade pedida: materializa o horizonte de sempre (o job diário
+      // estende quando o tempo passa); com quantidade: gera só essas e trava
+      // (endDate) pra o job não continuar depois.
+      const count = requestedCount ?? (freq === 'WEEKLY' ? FIXED_HORIZON_WEEKS : FIXED_HORIZON_MONTHS) + 1;
+
+      const dates: IsoDate[] = [];
+      let cursor = body.date;
+      for (let i = 0; i < count; i++) {
+        dates.push(cursor);
+        cursor = step(cursor);
+      }
+      const lastDate = dates[dates.length - 1]!;
+
       const rec = await tx.recurrence.create({
         data: {
           userId,
           mode: 'FIXED',
-          frequency: body.recurrence.frequency,
+          frequency: freq,
           interval: 1,
-          dayOfMonth: Number(body.date.slice(8, 10)),
+          dayOfMonth: freq === 'MONTHLY' ? Number(body.date.slice(8, 10)) : null,
           startDate: isoToDbDate(body.date),
+          endDate: requestedCount ? isoToDbDate(lastDate) : null,
+          occurrences: requestedCount ?? null,
           type,
           direction: body.direction,
           amount: numToBig(body.amount),
           description: body.description,
           accountId: body.accountId,
           categoryId: body.categoryId,
-          materializedUntil: isoToDbDate(addMonths(body.date, FIXED_HORIZON_MONTHS)),
+          materializedUntil: isoToDbDate(lastDate),
         },
       });
       const rows = [];
-      for (let i = 0; i <= FIXED_HORIZON_MONTHS; i++) {
-        const date = addMonths(body.date, i);
+      for (let i = 0; i < dates.length; i++) {
+        const date = dates[i]!;
         const paidThis = body.paid && i === 0;
         rows.push(
           await tx.transaction.create({
@@ -544,15 +575,18 @@ export class TransactionsService {
     if (body.categoryId) await this.assertCategory(current.userId, body.categoryId);
     if (body.placeId) await this.assertPlace(current.userId, body.placeId);
 
-    // Cartão parcelado: mudar a data de uma parcela remaneja TODAS as parcelas
-    // do grupo (e as move para a fatura certa).
-    if (
-      body.date &&
-      current.type === 'CARD_EXPENSE' &&
-      current.installmentGroupId &&
-      dbDateToIso(current.competenceDate) !== body.date
-    ) {
-      return this.remapCardInstallmentDates(current, body);
+    // Mudar a data de uma parcela (cartão ou avulsa): o front pergunta antes
+    // se é só esta ou se remaneja o grupo todo (`body.applyToInstallments`).
+    if (body.date && current.installmentGroupId && dbDateToIso(current.competenceDate) !== body.date) {
+      if (body.applyToInstallments) {
+        return current.type === 'CARD_EXPENSE'
+          ? this.remapCardInstallmentDates(current, body)
+          : this.remapAvulsoInstallmentDates(current, body);
+      }
+      if (current.type === 'CARD_EXPENSE') {
+        return this.moveSingleCardInstallment(current, body);
+      }
+      // avulsa + "só esta parcela": segue pro update normal (1 linha) abaixo.
     }
 
     const row = await this.db.transaction.update({
@@ -582,15 +616,61 @@ export class TransactionsService {
     return this.present(row);
   }
 
+  /** Campos "de conteúdo" que uma edição pode trazer junto com a mudança de data. */
+  private otherFieldsFrom(body: UpdateTransactionBody) {
+    return {
+      description: body.description,
+      amount: body.amount != null ? numToBig(body.amount) : undefined,
+      categoryId: body.categoryId === '' ? null : body.categoryId,
+      placeId: body.placeId === '' ? null : body.placeId,
+      notes: body.notes,
+      tags: body.tags,
+    };
+  }
+
+  /**
+   * Move só ESTA parcela do cartão para a fatura certa da nova data — as
+   * demais parcelas do grupo continuam onde estavam.
+   */
+  private async moveSingleCardInstallment(
+    current: InstallmentRow & { invoiceId: string | null },
+    body: UpdateTransactionBody,
+  ) {
+    const card = await this.db.creditCard.findFirst({
+      where: { id: current.creditCardId ?? '', userId: current.userId },
+    });
+    if (!card) throw Errors.badRequest('Cartão inválido');
+    const cycle = { closingDay: card.closingDay, dueDay: card.dueDay };
+    const placement = invoicesForInstallments(body.date!, 1, cycle)[0]!;
+    const invoice = await ensureInvoice(this.db, {
+      userId: current.userId,
+      creditCardId: card.id,
+      referenceMonth: placement.referenceMonth,
+      cycle,
+    });
+
+    const row = await this.db.transaction.update({
+      where: { id: current.id },
+      data: {
+        competenceDate: invoice.closingDate,
+        dueDate: invoice.dueDate,
+        invoiceId: invoice.id,
+        ...this.otherFieldsFrom(body),
+      },
+    });
+    if (current.invoiceId && current.invoiceId !== invoice.id) {
+      await recalcInvoiceTotal(this.db, current.invoiceId);
+    }
+    await recalcInvoiceTotal(this.db, invoice.id);
+    return this.present(row);
+  }
+
   /**
    * Recalcula a fatura/vencimento de cada parcela de uma compra parcelada no
    * cartão a partir da nova data. `body.date` é a nova competência da parcela
    * editada; as demais deslizam pela mesma âncora.
    */
-  private async remapCardInstallmentDates(
-    current: { id: string; userId: string; installmentGroupId: string | null; installmentNumber: number | null; creditCardId: string | null },
-    body: UpdateTransactionBody,
-  ) {
+  private async remapCardInstallmentDates(current: InstallmentRow, body: UpdateTransactionBody) {
     const card = await this.db.creditCard.findFirst({
       where: { id: current.creditCardId ?? '', userId: current.userId },
     });
@@ -631,6 +711,9 @@ export class TransactionsService {
               competenceDate: invoice.closingDate, // competência = fechamento da fatura
               dueDate: invoice.dueDate,
               invoiceId: invoice.id,
+              // as outras informações editadas (descrição, valor, categoria…)
+              // valem só para a parcela que o usuário estava mesmo editando.
+              ...(it.id === current.id ? this.otherFieldsFrom(body) : {}),
             },
           }),
         );
@@ -639,6 +722,49 @@ export class TransactionsService {
     });
 
     for (const invId of touchedInvoices) await recalcInvoiceTotal(this.db, invId);
+    const mine = rows.find((r) => r.id === current.id) ?? rows[0]!;
+    return this.present(mine);
+  }
+
+  /**
+   * Mesma ideia de `remapCardInstallmentDates`, mas para um parcelamento
+   * avulso (não-cartão): as parcelas não têm fatura, então só desliza a
+   * competência/vencimento de cada uma preservando o espaçamento mensal a
+   * partir da nova data da parcela editada. Parcelas já PAGAS não se mexem.
+   */
+  private async remapAvulsoInstallmentDates(current: InstallmentRow, body: UpdateTransactionBody) {
+    const items = await this.db.transaction.findMany({
+      where: { userId: current.userId, installmentGroupId: current.installmentGroupId! },
+      orderBy: { installmentNumber: 'asc' },
+    });
+    if (items.length === 0) throw Errors.notFound('Parcelas');
+
+    const editedIdx = Math.max(0, (current.installmentNumber ?? 1) - 1);
+    const anchor = addMonths(body.date!, -editedIdx);
+
+    const rows = await this.db.$transaction(async (tx) => {
+      const out = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]!;
+        if (it.status === 'PAID' && it.id !== current.id) {
+          out.push(it);
+          continue;
+        }
+        const newDate = isoToDbDate(addMonths(anchor, i));
+        out.push(
+          await tx.transaction.update({
+            where: { id: it.id },
+            data: {
+              competenceDate: newDate,
+              dueDate: newDate,
+              ...(it.id === current.id ? this.otherFieldsFrom(body) : {}),
+            },
+          }),
+        );
+      }
+      return out;
+    });
+
     const mine = rows.find((r) => r.id === current.id) ?? rows[0]!;
     return this.present(mine);
   }
@@ -839,4 +965,11 @@ export class TransactionsService {
 function statusFor(paid: boolean, date: string, today: string): 'PAID' | 'SCHEDULED' | 'PENDING' {
   if (paid) return 'PAID';
   return date > today ? 'SCHEDULED' : 'PENDING';
+}
+
+/** Avança `d` um período de `frequency` (mesma regra do job `recurrences:materialize`). */
+function stepByFrequency(d: IsoDate, frequency: RecurrenceFrequency): IsoDate {
+  if (frequency === 'WEEKLY') return addDays(d, 7);
+  if (frequency === 'YEARLY') return addMonths(d, 12);
+  return addMonths(d, 1);
 }

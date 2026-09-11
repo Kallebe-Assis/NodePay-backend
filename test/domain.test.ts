@@ -42,6 +42,13 @@ describe('regra de ouro do cartão', () => {
     const invs = invoicesForInstallments('2026-09-21', 3, cycle);
     expect(invs.map((i) => i.referenceMonth)).toEqual(['2026-10-01', '2026-11-01', '2026-12-01']);
   });
+
+  it('fecha dia 5, vence dia 10: compra no dia 7 já cai na fatura do mês seguinte', () => {
+    const p = placeInInvoice('2026-09-07', { closingDay: 5, dueDay: 10 });
+    expect(p.referenceMonth).toBe('2026-10-01');
+    expect(p.closingDate).toBe('2026-10-05');
+    expect(p.dueDate).toBe('2026-10-10');
+  });
 });
 
 describe('amortização', () => {
