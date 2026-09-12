@@ -3,7 +3,7 @@ import type { PayInvoiceBody } from '@nodepay/shared';
 import { Errors } from '../../lib/errors.js';
 import { nb, numToBig } from '../../lib/money.js';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
-import { recalcInvoiceTotal } from './invoice.helpers.js';
+import { recalcInvoiceTotal, verifiedInvoiceTotals } from './invoice.helpers.js';
 
 export class InvoicesService {
   constructor(private readonly db: PrismaClient) {}
@@ -20,7 +20,10 @@ export class InvoicesService {
       },
       orderBy: [{ referenceMonth: 'desc' }],
     });
-    return rows.map((r) => this.present(r));
+    // Confere o total de cada uma contra a soma real dos lançamentos (e
+    // corrige sozinho se algum ficou desatualizado) antes de responder.
+    const real = await verifiedInvoiceTotals(this.db, rows.map((r) => r.id));
+    return rows.map((r) => this.present(r, real.get(r.id)));
   }
 
   async get(scope: { userId?: string }, id: string) {
@@ -31,8 +34,9 @@ export class InvoicesService {
       },
     });
     if (!inv) throw Errors.notFound('Fatura');
+    const real = await verifiedInvoiceTotals(this.db, [inv.id]);
     return {
-      ...this.present(inv),
+      ...this.present(inv, real.get(inv.id)),
       items: inv.items.map((t) => ({
         id: t.id,
         description: t.description,
@@ -115,7 +119,7 @@ export class InvoicesService {
     });
   }
 
-  private present(i: any) {
+  private present(i: any, verifiedTotal?: number) {
     return {
       id: i.id,
       creditCardId: i.creditCardId,
@@ -125,7 +129,7 @@ export class InvoicesService {
       closingDate: dbDateToIso(i.closingDate),
       dueDate: dbDateToIso(i.dueDate),
       status: i.status,
-      total: nb(i.total),
+      total: verifiedTotal ?? nb(i.total),
       paidTransactionId: i.paidTransactionId,
     };
   }

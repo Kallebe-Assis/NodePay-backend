@@ -3,6 +3,7 @@ import type { CreateCreditCardBody, UpdateCreditCardBody } from '@nodepay/shared
 import { Errors } from '../../lib/errors.js';
 import { nb, numToBig } from '../../lib/money.js';
 import { dbDateToIso } from '../../lib/date.js';
+import { verifiedInvoiceTotals } from '../invoices/invoice.helpers.js';
 
 type NextInvoice = { total: number; dueDate: string } | null;
 
@@ -18,23 +19,25 @@ export class CreditCardsService {
       orderBy: { createdAt: 'asc' },
     });
 
-    const totals = await this.db.invoice.groupBy({
-      by: ['creditCardId'],
-      where: { ...userWhere, status: { in: ['OPEN', 'CLOSED'] } },
-      _sum: { total: true },
-    });
-    const openByCard = new Map(totals.map((t) => [t.creditCardId, nb(t._sum.total)]));
-
-    // "próxima fatura" = a não-paga que vence primeiro (por cartão)
-    const upcoming = await this.db.invoice.findMany({
+    // Faturas em aberto/fechadas de todos os cartões — o total de cada uma é
+    // CONFERIDO contra a soma real dos lançamentos (e corrigido se precisar)
+    // antes de somar, em vez de confiar cegamente no valor materializado.
+    const openInvoices = await this.db.invoice.findMany({
       where: { ...userWhere, status: { in: ['OPEN', 'CLOSED'] } },
       orderBy: { dueDate: 'asc' },
-      select: { creditCardId: true, total: true, dueDate: true },
+      select: { id: true, creditCardId: true, dueDate: true },
     });
+    const real = await verifiedInvoiceTotals(this.db, openInvoices.map((i) => i.id));
+
+    const openByCard = new Map<string, number>();
     const nextByCard = new Map<string, NextInvoice>();
-    for (const inv of upcoming) {
-      if (nextByCard.has(inv.creditCardId)) continue;
-      nextByCard.set(inv.creditCardId, { total: nb(inv.total), dueDate: dbDateToIso(inv.dueDate) });
+    for (const inv of openInvoices) {
+      const total = real.get(inv.id) ?? 0;
+      openByCard.set(inv.creditCardId, (openByCard.get(inv.creditCardId) ?? 0) + total);
+      // "próxima fatura" = a primeira (já ordenado por vencimento) de cada cartão
+      if (!nextByCard.has(inv.creditCardId)) {
+        nextByCard.set(inv.creditCardId, { total, dueDate: dbDateToIso(inv.dueDate) });
+      }
     }
 
     return cards.map((c) =>
@@ -47,19 +50,18 @@ export class CreditCardsService {
       where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
     });
     if (!card) throw Errors.notFound('Cartão');
-    const agg = await this.db.invoice.aggregate({
-      where: { creditCardId: id, status: { in: ['OPEN', 'CLOSED'] } },
-      _sum: { total: true },
-    });
-    const next = await this.db.invoice.findFirst({
+    const openInvoices = await this.db.invoice.findMany({
       where: { creditCardId: id, status: { in: ['OPEN', 'CLOSED'] } },
       orderBy: { dueDate: 'asc' },
-      select: { total: true, dueDate: true },
+      select: { id: true, dueDate: true },
     });
+    const real = await verifiedInvoiceTotals(this.db, openInvoices.map((i) => i.id));
+    const openTotal = [...real.values()].reduce((s, v) => s + v, 0);
+    const next = openInvoices[0];
     return this.present(
       card,
-      nb(agg._sum.total),
-      next ? { total: nb(next.total), dueDate: dbDateToIso(next.dueDate) } : null,
+      openTotal,
+      next ? { total: real.get(next.id) ?? 0, dueDate: dbDateToIso(next.dueDate) } : null,
     );
   }
 

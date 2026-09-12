@@ -536,12 +536,22 @@ export class TransactionsService {
     // ---- edição de série (forward / all) ----
     // Propaga só campos "de template": descrição, categoria, conta e — apenas
     // para séries FIXAS — o valor (em INSTALLMENT o valor por parcela vem de
-    // distribute() e não pode ser sobrescrito em bloco). Data/status/pagamento
-    // continuam por ocorrência.
+    // distribute() e não pode ser sobrescrito em bloco). Status/pagamento/
+    // observações/etiquetas continuam por ocorrência.
     if (body.scope !== 'one' && current.recurrenceId) {
       await this.assertPlace(current.userId, body.placeId || undefined);
       const rec = await this.db.recurrence.findUnique({ where: { id: current.recurrenceId } });
       const canAmount = rec?.mode === 'FIXED';
+
+      // Recorrência FIXA + data mudou: remaneja a data de TODAS as ocorrências
+      // em escopo (preservando o espaçamento semanal/mensal/anual a partir da
+      // nova data desta), em vez de deixar as demais no lugar. Em INSTALLMENT
+      // a data continua por ocorrência (o valor de cada parcela já vem de
+      // distribute() com base no calendário original).
+      if (rec?.mode === 'FIXED' && body.date && dbDateToIso(current.competenceDate) !== body.date) {
+        return this.remapFixedSeriesDates(current, rec, body);
+      }
+
       const seriesData = {
         description: body.description,
         categoryId: body.categoryId === '' ? null : body.categoryId,
@@ -769,6 +779,87 @@ export class TransactionsService {
     return this.present(mine);
   }
 
+  /**
+   * Edição em lote ("esta e as próximas" / "toda a série") de uma recorrência
+   * FIXA em que a DATA também mudou: em vez de deixar as demais ocorrências
+   * paradas, remaneja a data de todas as ocorrências em escopo preservando o
+   * espaçamento da frequência (semanal/mensal/anual) a partir da nova data da
+   * ocorrência editada. Ocorrências já PAGAS não têm a data mexida (histórico
+   * não se reescreve) — só recebem os demais campos, como no fluxo normal.
+   * Ao final, realinha `Recurrence.startDate`/`materializedUntil`/`endDate`
+   * com as datas reais que sobraram, pra o job de materialização continuar
+   * do lugar certo.
+   */
+  private async remapFixedSeriesDates(
+    current: { id: string; userId: string; recurrenceId: string | null; competenceDate: Date },
+    rec: { id: string; frequency: RecurrenceFrequency; interval: number; endDate: Date | null },
+    body: UpdateTransactionBody,
+  ) {
+    const allItems = await this.db.transaction.findMany({
+      where: { userId: current.userId, recurrenceId: rec.id, status: { not: 'CANCELED' } },
+      orderBy: { competenceDate: 'asc' },
+    });
+    const editedIdx = allItems.findIndex((it) => it.id === current.id);
+    if (editedIdx === -1) throw Errors.notFound('Ocorrência');
+
+    const inScope = body.scope === 'all' ? allItems : allItems.slice(editedIdx);
+
+    const seriesData = {
+      description: body.description,
+      categoryId: body.categoryId === '' ? null : body.categoryId,
+      accountId: body.accountId,
+      placeId: body.placeId === '' ? null : body.placeId,
+      ...(body.amount != null ? { amount: numToBig(body.amount) } : {}),
+    };
+
+    const rows = await this.db.$transaction(async (tx) => {
+      const out = [];
+      for (const it of inScope) {
+        const isEdited = it.id === current.id;
+        const offset = allItems.indexOf(it) - editedIdx;
+        const skipDate = it.status === 'PAID' && !isEdited;
+        const newDate = isoToDbDate(stepByFrequencyN(body.date!, offset, rec.frequency, rec.interval));
+        out.push(
+          await tx.transaction.update({
+            where: { id: it.id },
+            data: {
+              ...seriesData,
+              ...(skipDate
+                ? {}
+                : {
+                    competenceDate: newDate,
+                    dueDate: isEdited && body.dueDate ? isoToDbDate(body.dueDate) : newDate,
+                  }),
+            },
+          }),
+        );
+      }
+      return out;
+    });
+
+    // realinha a recorrência com as datas reais que restaram (min/max)
+    const agg = await this.db.transaction.aggregate({
+      where: { recurrenceId: rec.id, status: { not: 'CANCELED' } },
+      _min: { competenceDate: true },
+      _max: { competenceDate: true },
+    });
+    if (agg._min.competenceDate && agg._max.competenceDate) {
+      await this.db.recurrence.update({
+        where: { id: rec.id },
+        data: {
+          startDate: agg._min.competenceDate,
+          materializedUntil: agg._max.competenceDate,
+          dayOfMonth:
+            rec.frequency === 'MONTHLY' ? Number(dbDateToIso(agg._min.competenceDate).slice(8, 10)) : null,
+          ...(rec.endDate ? { endDate: agg._max.competenceDate } : {}),
+        },
+      });
+    }
+
+    const mine = rows.find((r) => r.id === current.id) ?? rows[0]!;
+    return this.present(mine);
+  }
+
   /** Pula/cancela uma ocorrência (ex.: "esse mês não teve"). */
   async skip(scope: { userId?: string }, id: string) {
     const current = await this.db.transaction.findFirst({
@@ -972,4 +1063,16 @@ function stepByFrequency(d: IsoDate, frequency: RecurrenceFrequency): IsoDate {
   if (frequency === 'WEEKLY') return addDays(d, 7);
   if (frequency === 'YEARLY') return addMonths(d, 12);
   return addMonths(d, 1);
+}
+
+/** Avança (ou volta, se `n` for negativo) `d` em `n` períodos de `frequency`. */
+function stepByFrequencyN(
+  d: IsoDate,
+  n: number,
+  frequency: RecurrenceFrequency,
+  interval = 1,
+): IsoDate {
+  if (n === 0) return d;
+  const unit = frequency === 'WEEKLY' ? 7 * interval : frequency === 'YEARLY' ? 12 * interval : interval;
+  return frequency === 'WEEKLY' ? addDays(d, unit * n) : addMonths(d, unit * n);
 }
