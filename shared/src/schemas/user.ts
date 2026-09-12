@@ -15,6 +15,8 @@ export const userSchema = z.object({
   status: userStatusSchema,
   createdAt: z.string(),
   approvedAt: z.string().nullable(),
+  /** último login ou renovação de sessão (derivado de Session.createdAt) */
+  lastAccessAt: z.string().nullable(),
   // métricas rápidas para a tabela admin
   counts: z
     .object({

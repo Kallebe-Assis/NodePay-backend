@@ -37,8 +37,9 @@ export class UsersService {
       this.db.user.count({ where }),
     ]);
 
+    const lastAccessByUser = await this.lastAccessByUser(rows.map((u) => u.id));
     return {
-      data: rows.map((u) => this.present(u)),
+      data: rows.map((u) => this.present(u, lastAccessByUser.get(u.id) ?? null)),
       page: q.page,
       pageSize: q.pageSize,
       total,
@@ -51,7 +52,29 @@ export class UsersService {
       include: { _count: { select: { accounts: true, transactions: true, creditCards: true } } },
     });
     if (!u) throw Errors.notFound('Usuário');
-    return this.present(u);
+    const lastAccessByUser = await this.lastAccessByUser([id]);
+    return this.present(u, lastAccessByUser.get(id) ?? null);
+  }
+
+  /**
+   * "Último acesso" = último login ou renovação de sessão. Não existe coluna
+   * própria — cada `Session` já ganha uma linha nova em login() e em toda
+   * rotação de refresh token (issueTokens(), em auth.service.ts), então o
+   * MAX(createdAt) das sessões do usuário É o último acesso, sem precisar de
+   * migração nem de escrita extra a cada requisição.
+   */
+  private async lastAccessByUser(userIds: string[]): Promise<Map<string, Date>> {
+    if (userIds.length === 0) return new Map();
+    const rows = await this.db.session.groupBy({
+      by: ['userId'],
+      where: { userId: { in: userIds } },
+      _max: { createdAt: true },
+    });
+    return new Map(
+      rows
+        .filter((r) => r._max.createdAt)
+        .map((r) => [r.userId, r._max.createdAt as Date]),
+    );
   }
 
   async create(body: AdminCreateUserBody, actingAdminId: string) {
@@ -79,7 +102,7 @@ export class UsersService {
       action: 'create',
       diff: { name: body.name, email: body.email, role: body.role, status: body.status },
     });
-    return this.present({ ...user, _count: { accounts: 0, transactions: 0, creditCards: 0 } });
+    return this.present({ ...user, _count: { accounts: 0, transactions: 0, creditCards: 0 } }, null);
   }
 
   async update(id: string, body: AdminUpdateUserBody, actingAdminId: string) {
@@ -133,7 +156,7 @@ export class UsersService {
         ...(body.password ? { password: { from: '***', to: '*** (redefinida)' } } : {}),
       },
     });
-    return this.present(updated);
+    return this.get(id);
   }
 
   async approve(id: string, actingAdminId: string) {
@@ -222,7 +245,7 @@ export class UsersService {
     if (others === 0) throw Errors.badRequest('Precisa haver ao menos um administrador ativo');
   }
 
-  private present(u: any) {
+  private present(u: any, lastAccessAt: Date | null) {
     return {
       id: u.id,
       name: u.name,
@@ -231,6 +254,7 @@ export class UsersService {
       status: u.status,
       createdAt: u.createdAt.toISOString(),
       approvedAt: u.approvedAt ? u.approvedAt.toISOString() : null,
+      lastAccessAt: lastAccessAt ? lastAccessAt.toISOString() : null,
       counts: u._count
         ? {
             accounts: u._count.accounts,
