@@ -1013,20 +1013,26 @@ export class TransactionsService {
       return { deleted: affected.length };
     }
 
+    // Se for pagamento de fatura, acha a fatura ANTES de excluir: o FK de
+    // Invoice.paidTransactionId é `onDelete: SetNull`, então assim que a
+    // transação for excluída o banco já zera essa referência sozinho — uma
+    // busca por `paidTransactionId: id` DEPOIS do delete nunca acharia nada.
+    const relatedInvoice =
+      current.type === 'INVOICE_PAYMENT'
+        ? await this.db.invoice.findFirst({ where: { paidTransactionId: id } })
+        : null;
+
     await this.db.transaction.delete({ where: { id } });
     if (current.invoiceId) await recalcInvoiceTotal(this.db, current.invoiceId);
 
     // Excluir o pagamento de uma fatura desfaz o pagamento: ela volta a ficar
     // em aberto (o frontend avisa/confirma isso antes de chamar o delete).
-    if (current.type === 'INVOICE_PAYMENT') {
-      const invoice = await this.db.invoice.findFirst({ where: { paidTransactionId: id } });
-      if (invoice) {
-        await this.db.invoice.update({
-          where: { id: invoice.id },
-          data: { status: 'OPEN', paidTransactionId: null },
-        });
-        await recalcInvoiceTotal(this.db, invoice.id);
-      }
+    if (relatedInvoice) {
+      await this.db.invoice.update({
+        where: { id: relatedInvoice.id },
+        data: { status: 'OPEN', paidTransactionId: null },
+      });
+      await recalcInvoiceTotal(this.db, relatedInvoice.id);
     }
 
     return { deleted: 1 };
