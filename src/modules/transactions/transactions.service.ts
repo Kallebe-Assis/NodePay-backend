@@ -68,6 +68,7 @@ export class TransactionsService {
       notes: body.notes || null,
       tags: body.tags ?? [],
       placeId: body.placeId || null,
+      includeInTotals: body.includeInTotals,
     };
 
     // Toda despesa/receita guarda 2 datas: competência (`date`) e pagamento
@@ -101,6 +102,9 @@ export class TransactionsService {
       // ---- parcelado (avulso, não é cartão) ----
       if (body.recurrence.mode === 'INSTALLMENT') {
         const n = body.recurrence.installments;
+        // parcela inicial: pra registrar uma dívida que já tinha parcelas
+        // pagas ANTES de existir no NodePay — só cria a partir dela.
+        const start = Math.min(body.recurrence.startInstallment ?? 1, n);
         const parts = distribute(body.amount, n);
         const rec = await tx.recurrence.create({
           data: {
@@ -122,9 +126,9 @@ export class TransactionsService {
         });
         const groupId = rec.id;
         const rows = [];
-        for (let i = 0; i < n; i++) {
+        for (let i = start - 1; i < n; i++) {
           const date = addMonths(body.date, i);
-          const paidThis = body.paid && i === 0;
+          const paidThis = body.paid && i === start - 1;
           const dueIso = paidThis ? paymentIso : date;
           rows.push(
             await tx.transaction.create({
@@ -150,7 +154,7 @@ export class TransactionsService {
             }),
           );
         }
-        return { created: n, recurrenceId: rec.id, transactions: rows.map((r) => this.present(r)) };
+        return { created: rows.length, recurrenceId: rec.id, transactions: rows.map((r) => this.present(r)) };
       }
 
       // ---- fixo (semanal/mensal/anual — com ou sem quantidade definida) ----
@@ -232,6 +236,7 @@ export class TransactionsService {
       notes: body.notes || null,
       tags: body.tags ?? [],
       placeId: body.placeId || null,
+      includeInTotals: body.includeInTotals,
     };
 
     const cycle = { closingDay: card.closingDay, dueDay: card.dueDay };
@@ -240,10 +245,13 @@ export class TransactionsService {
     const total = body.amountIsPerInstallment ? body.amount * body.installments : body.amount;
     const parts = distribute(total, body.installments);
     const groupId = `card_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    // parcela inicial: pra registrar uma compra parcelada que já vinha de
+    // antes do NodePay — só lança as faturas a partir dela.
+    const start = Math.min(body.startInstallment ?? 1, body.installments);
 
     return this.db.$transaction(async (tx) => {
       const rows = [];
-      for (let i = 0; i < body.installments; i++) {
+      for (let i = start - 1; i < body.installments; i++) {
         const placement = placements[i]!;
         const invoice = await ensureInvoice(tx, {
           userId,
@@ -290,6 +298,7 @@ export class TransactionsService {
     }
     await this.assertAccount(userId, body.fromAccountId);
     await this.assertAccount(userId, body.toAccountId);
+    await this.assertCategory(userId, body.categoryId);
     const today = todaySP();
     const row = await this.db.transaction.create({
       data: {
@@ -304,6 +313,9 @@ export class TransactionsService {
         accountId: body.fromAccountId,
         transferToAccountId: body.toAccountId,
         transferGroupId: `tr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        categoryId: body.categoryId || null,
+        transferFlow: body.transferFlow || null,
+        includeInTotals: body.includeInTotals,
       },
     });
     return { created: 1, transactions: [this.present(row)] };
@@ -620,6 +632,8 @@ export class TransactionsService {
         notes: body.notes,
         tags: body.tags,
         placeId: body.placeId === '' ? null : body.placeId,
+        includeInTotals: body.includeInTotals,
+        transferFlow: body.transferFlow,
       },
     });
     if (row.invoiceId) await recalcInvoiceTotal(this.db, row.invoiceId);
@@ -1001,6 +1015,20 @@ export class TransactionsService {
 
     await this.db.transaction.delete({ where: { id } });
     if (current.invoiceId) await recalcInvoiceTotal(this.db, current.invoiceId);
+
+    // Excluir o pagamento de uma fatura desfaz o pagamento: ela volta a ficar
+    // em aberto (o frontend avisa/confirma isso antes de chamar o delete).
+    if (current.type === 'INVOICE_PAYMENT') {
+      const invoice = await this.db.invoice.findFirst({ where: { paidTransactionId: id } });
+      if (invoice) {
+        await this.db.invoice.update({
+          where: { id: invoice.id },
+          data: { status: 'OPEN', paidTransactionId: null },
+        });
+        await recalcInvoiceTotal(this.db, invoice.id);
+      }
+    }
+
     return { deleted: 1 };
   }
 
@@ -1046,6 +1074,8 @@ export class TransactionsService {
       loanId: r.loanId,
       transferGroupId: r.transferGroupId,
       transferToAccountId: r.transferToAccountId,
+      transferFlow: r.transferFlow ?? null,
+      includeInTotals: r.includeInTotals ?? true,
       remindTelegram: r.remindTelegram ?? false,
       remindDaysBefore: r.remindDaysBefore ?? 1,
       createdAt: r.createdAt.toISOString(),

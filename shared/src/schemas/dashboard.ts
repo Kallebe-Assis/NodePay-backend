@@ -80,6 +80,8 @@ export const dashboardSummarySchema = z.object({
   /** pendentes/agendados do mês (não entram no total nem no net) */
   pendingIncome: z.number().int(),
   pendingExpense: z.number().int(),
+  /** compras no cartão do mês — à parte de `totalExpense` (evita duplicar com o pagamento da fatura) */
+  cardExpense: z.number().int(),
   currentBalance: z.number().int(),
   projectedEndOfMonthBalance: z.number().int(),
   upcomingBills: z.number().int(),

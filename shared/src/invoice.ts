@@ -72,7 +72,19 @@ export function buildPlacement(
     : DateTime.fromObject({ year: refYear, month: refMonth1to12, day: 1 })
         .plus({ months: 1 })
         .toObject();
-  const dueDate = clampDayToMonth(dueAnchor.year!, dueAnchor.month!, cycle.dueDay);
+  let dueDate = clampDayToMonth(dueAnchor.year!, dueAnchor.month!, cycle.dueDay);
+
+  // Meses curtos (fev.) podem "clampar" fechamento e vencimento no MESMO dia
+  // quando os dois dias configurados são altos (ex.: fecha 30, vence 31 —
+  // em fevereiro os dois viram dia 28/29). O vencimento tem que ficar SEMPRE
+  // depois do fechamento, então nesse caso empurra pro mês seguinte.
+  if (dueDate <= closingDate) {
+    const next = DateTime.fromObject(
+      { year: dueAnchor.year!, month: dueAnchor.month!, day: 1 },
+      { zone: TIMEZONE },
+    ).plus({ months: 1 });
+    dueDate = clampDayToMonth(next.year, next.month, cycle.dueDay);
+  }
 
   return {
     referenceMonth: clampDayToMonth(refYear, refMonth1to12, 1),

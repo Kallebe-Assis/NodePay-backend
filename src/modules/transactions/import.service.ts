@@ -20,6 +20,10 @@ export function importTemplateCsv(): string {
     'Nubank',
     'Alimentação',
     'sim',
+    '', // data_pagamento — vazio usa a mesma data do lançamento
+    'Supermercado Extra',
+    'mensal|casa',
+    'compra do mês',
   ];
   return `${IMPORT_CSV_HEADERS.join(';')}\r\n${example.join(';')}\r\n`;
 }
@@ -32,9 +36,10 @@ export async function previewImport(db: PrismaClient, userId: string, csv: strin
     throw Errors.badRequest(`Máximo de ${IMPORT_MAX_ROWS} lançamentos por importação.`);
   }
 
-  const [accounts, categories, rules] = await Promise.all([
+  const [accounts, categories, places, rules] = await Promise.all([
     db.account.findMany({ where: { userId, archived: false }, select: { id: true, name: true } }),
     db.category.findMany({ where: { userId }, select: { id: true, name: true, kind: true } }),
+    db.place.findMany({ where: { userId }, select: { id: true, name: true } }),
     db.categoryRule.findMany({
       where: { userId, active: true },
       orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
@@ -44,6 +49,7 @@ export async function previewImport(db: PrismaClient, userId: string, csv: strin
   const accByName = new Map(accounts.map((a) => [norm(a.name), a]));
   const catByName = new Map(categories.map((c) => [norm(c.name), c]));
   const catById = new Map(categories.map((c) => [c.id, c]));
+  const placeByName = new Map(places.map((p) => [norm(p.name), p]));
 
   /** aplica as regras de auto-categorização a uma descrição (em memória). */
   const ruleCategory = (description: string) => {
@@ -69,6 +75,16 @@ export async function previewImport(db: PrismaClient, userId: string, csv: strin
       accountName: get('conta'),
       categoryName: get('categoria') || null,
       paid: /^(s|sim|1|true|yes)$/i.test(get('pago')),
+      paymentDate: get('data_pagamento') || get('data'),
+      placeName: get('local') || null,
+      tags: get('etiquetas')
+        ? get('etiquetas')
+            .split('|')
+            .map((t) => t.trim())
+            .filter(Boolean)
+            .slice(0, 10)
+        : [],
+      notes: get('observacoes') || null,
     };
 
     const errs: string[] = [];
@@ -76,6 +92,15 @@ export async function previewImport(db: PrismaClient, userId: string, csv: strin
     // data
     if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.date) || Number.isNaN(Date.parse(`${draft.date}T00:00:00Z`))) {
       errs.push('data inválida (use AAAA-MM-DD)');
+    }
+
+    // data de pagamento (opcional — vazia usa a mesma data do lançamento)
+    if (
+      draft.paymentDate &&
+      (!/^\d{4}-\d{2}-\d{2}$/.test(draft.paymentDate) ||
+        Number.isNaN(Date.parse(`${draft.paymentDate}T00:00:00Z`)))
+    ) {
+      errs.push('data_pagamento inválida (use AAAA-MM-DD ou deixe em branco)');
     }
 
     // tipo
@@ -113,6 +138,11 @@ export async function previewImport(db: PrismaClient, userId: string, csv: strin
       }
     }
 
+    // local de compra (opcional) — precisa já existir, igual à categoria
+    if (draft.placeName && !placeByName.has(norm(draft.placeName))) {
+      errs.push(`local "${draft.placeName}" não encontrado`);
+    }
+
     draft.ok = errs.length === 0;
     draft.error = errs.length ? errs.join('; ') : null;
     return draft;
@@ -129,31 +159,37 @@ export async function commitImport(db: PrismaClient, userId: string, csv: string
     throw Errors.badRequest('Há linhas inválidas. Corrija o arquivo e tente de novo.');
   }
 
-  const [accounts, categories] = await Promise.all([
+  const [accounts, categories, places] = await Promise.all([
     db.account.findMany({ where: { userId }, select: { id: true, name: true } }),
     db.category.findMany({ where: { userId }, select: { id: true, name: true } }),
+    db.place.findMany({ where: { userId }, select: { id: true, name: true } }),
   ]);
   const accId = new Map(accounts.map((a) => [norm(a.name), a.id]));
   const catId = new Map(categories.map((c) => [norm(c.name), c.id]));
+  const placeId = new Map(places.map((p) => [norm(p.name), p.id]));
   const today = todaySP();
 
   await db.$transaction(
-    preview.rows.map((r) =>
-      db.transaction.create({
+    preview.rows.map((r) => {
+      const dueIso = r.paid ? r.paymentDate : r.date;
+      return db.transaction.create({
         data: {
           userId,
           type: r.direction === 'expense' ? 'EXPENSE' : 'INCOME',
           amount: numToBig(r.amount),
           description: r.description,
           competenceDate: isoToDbDate(r.date),
-          dueDate: isoToDbDate(r.date),
-          paidDate: r.paid ? isoToDbDate(r.date) : null,
-          status: r.paid ? 'PAID' : r.date > today ? 'SCHEDULED' : 'PENDING',
+          dueDate: isoToDbDate(dueIso),
+          paidDate: r.paid ? isoToDbDate(r.paymentDate) : null,
+          status: r.paid ? 'PAID' : dueIso > today ? 'SCHEDULED' : 'PENDING',
           accountId: accId.get(norm(r.accountName))!,
           categoryId: r.categoryName ? (catId.get(norm(r.categoryName)) ?? null) : null,
+          placeId: r.placeName ? (placeId.get(norm(r.placeName)) ?? null) : null,
+          tags: r.tags,
+          notes: r.notes,
         },
-      }),
-    ),
+      });
+    }),
   );
 
   return { created: preview.rows.length };

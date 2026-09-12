@@ -72,5 +72,11 @@ export const payInvoiceBodySchema = z.object({
   accountId: z.string().min(1),
   paidDate: isoDateSchema,
   amount: z.number().int().positive().optional(), // default: total da fatura
+  /**
+   * Contar este pagamento nos totais/dashboard como despesa? Default true.
+   * Desligar evita duplicar quem já contabiliza cada compra do cartão à
+   * parte (a seção "Gastos no cartão" do dashboard já mostra isso).
+   */
+  includeInTotals: z.boolean().optional(),
 });
 export type PayInvoiceBody = z.infer<typeof payInvoiceBodySchema>;

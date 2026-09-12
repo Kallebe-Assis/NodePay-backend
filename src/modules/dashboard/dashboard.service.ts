@@ -1,4 +1,4 @@
-import type { PrismaClient, TransactionType } from '@prisma/client';
+import type { PrismaClient, TransactionType, TransferFlow } from '@prisma/client';
 import { addDays, addMonths, endOfMonth, type IsoDate, startOfMonth, todaySP } from '@nodepay/shared';
 import { nb } from '../../lib/money.js';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
@@ -7,6 +7,19 @@ import { computeBalances } from '../accounts/balance.js';
 const OUT: TransactionType[] = ['EXPENSE', 'INVOICE_PAYMENT', 'LOAN_INSTALLMENT'];
 const IN: TransactionType[] = ['INCOME', 'LOAN_DISBURSEMENT'];
 const PENDING = ['PENDING', 'SCHEDULED', 'PARTIAL'];
+
+/**
+ * Classifica um lançamento em receita/despesa/nenhum pros TOTAIS do painel
+ * (diferente de `computeBalances`, que sempre mexe no saldo — aqui é só
+ * contagem). TRANSFER só entra se `transferFlow` tiver sido marcado — por
+ * padrão é neutro (nem receita, nem despesa).
+ */
+function flowOf(type: TransactionType, transferFlow: TransferFlow | null): 'in' | 'out' | null {
+  if (IN.includes(type)) return 'in';
+  if (OUT.includes(type)) return 'out';
+  if (type === 'TRANSFER') return transferFlow === 'INCOME' ? 'in' : transferFlow === 'EXPENSE' ? 'out' : null;
+  return null;
+}
 
 /** (atual − anterior) / |anterior|; null quando anterior = 0. */
 function pct(cur: number, prev: number): number | null {
@@ -51,6 +64,8 @@ export class DashboardService {
             recurrenceId: true,
             loanId: true,
             installmentGroupId: true,
+            includeInTotals: true,
+            transferFlow: true,
           },
         }),
         computeBalances(this.db, { userId }, { dashboardOnly: true }),
@@ -65,12 +80,13 @@ export class DashboardService {
           orderBy: { dueDate: 'asc' },
         }),
         this.db.transaction.groupBy({
-          by: ['type'],
+          by: ['type', 'transferFlow'],
           where: {
             userId,
             status: 'PAID',
+            includeInTotals: true,
             paidDate: { gte: isoToDbDate(prevFrom), lte: isoToDbDate(prevTo) },
-            type: { in: [...IN, ...OUT] },
+            OR: [{ type: { in: [...IN, ...OUT] } }, { type: 'TRANSFER', transferFlow: { not: null } }],
           },
           _sum: { amount: true },
         }),
@@ -78,7 +94,8 @@ export class DashboardService {
           where: {
             userId,
             status: 'PAID',
-            type: { in: OUT },
+            includeInTotals: true,
+            OR: [{ type: { in: OUT } }, { type: 'TRANSFER', transferFlow: 'EXPENSE' }],
             paidDate: { gte: isoToDbDate(runwayFrom), lte: isoToDbDate(today) },
           },
           _sum: { amount: true },
@@ -88,17 +105,22 @@ export class DashboardService {
     let prevIncome = 0;
     let prevExpense = 0;
     for (const g of prevAgg) {
-      if (IN.includes(g.type)) prevIncome += nb(g._sum.amount);
-      if (OUT.includes(g.type)) prevExpense += nb(g._sum.amount);
+      const flow = flowOf(g.type, g.transferFlow);
+      if (flow === 'in') prevIncome += nb(g._sum.amount);
+      if (flow === 'out') prevExpense += nb(g._sum.amount);
     }
 
     const catName = new Map(categories.map((c) => [c.id, c]));
 
     let totalIncome = 0; // liquidado no mês (pela data de pagamento)
-    let totalExpense = 0; // liquidado no mês (pela data de pagamento)
+    let totalExpense = 0; // liquidado no mês (pela data de pagamento) — despesa COMUM, sem compras de cartão
     let pendingIncome = 0;
     let pendingExpense = 0;
     let committed = 0;
+    // Compras no cartão (type=CARD_EXPENSE) ficam de fora de totalExpense —
+    // são mostradas à parte pra não duplicar quando a fatura for paga (aí sim
+    // vira INVOICE_PAYMENT e conta como despesa comum).
+    let cardExpense = 0;
     const byExpenseCat = new Map<string | null, number>();
     const byIncomeCat = new Map<string | null, number>();
 
@@ -111,14 +133,21 @@ export class DashboardService {
       const realized = paidInMonth ? paidPart : 0;
       const open = dueInMonth && PENDING.includes(t.status) ? pendingPart : 0;
 
-      if (IN.includes(t.type)) {
+      if (t.type === 'CARD_EXPENSE') {
+        if (t.includeInTotals) cardExpense += realized + open;
+        continue;
+      }
+      if (!t.includeInTotals) continue;
+
+      const flow = flowOf(t.type, t.transferFlow);
+      if (flow === 'in') {
         totalIncome += realized;
         pendingIncome += open;
         if (realized + open > 0) {
           byIncomeCat.set(t.categoryId, (byIncomeCat.get(t.categoryId) ?? 0) + realized + open);
         }
       }
-      if (OUT.includes(t.type)) {
+      if (flow === 'out') {
         totalExpense += realized;
         pendingExpense += open;
         if (realized + open > 0) {
@@ -237,6 +266,8 @@ export class DashboardService {
       health,
       pendingIncome,
       pendingExpense,
+      /** compras no cartão do mês (à parte de totalExpense — evita duplicar com o pagamento da fatura) */
+      cardExpense,
       currentBalance: totalCurrent,
       projectedEndOfMonthBalance: running,
       upcomingBills,

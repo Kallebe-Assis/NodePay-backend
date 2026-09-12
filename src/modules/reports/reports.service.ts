@@ -1,4 +1,4 @@
-import type { PrismaClient } from '@prisma/client';
+import type { PrismaClient, Prisma, TransactionType } from '@prisma/client';
 import {
   formatBRL,
   formatLongDate,
@@ -6,6 +6,7 @@ import {
   type GenerateReportQuery,
   INFLOW_TYPES,
   OUTFLOW_TYPES,
+  type ReportFlow,
   todaySP,
 } from '@nodepay/shared';
 import { nb } from '../../lib/money.js';
@@ -32,6 +33,24 @@ const STATUS_LABEL: Record<string, string> = {
   PAID: 'Pago',
   CANCELED: 'Cancelado',
 };
+
+/** Tipos de lançamento que cada grupo do filtro "flows" cobre. */
+const FLOW_TYPES: Record<ReportFlow, TransactionType[]> = {
+  income: ['INCOME', 'LOAN_DISBURSEMENT'],
+  expense: ['EXPENSE', 'LOAN_INSTALLMENT', 'INVOICE_PAYMENT'],
+  card: ['CARD_EXPENSE'],
+  transfer: ['TRANSFER'],
+};
+
+/** Monta o `where` comum de contas/cartões/grupos a partir da seleção do relatório. */
+function filtersWhere(q: GenerateReportQuery): Prisma.TransactionWhereInput {
+  return {
+    ...(q.accountIds?.length ? { accountId: { in: q.accountIds } } : {}),
+    ...(q.creditCardIds?.length ? { creditCardId: { in: q.creditCardIds } } : {}),
+    ...(q.categoryId ? { categoryId: q.categoryId } : {}),
+    ...(q.flows ? { type: { in: q.flows.flatMap((f) => FLOW_TYPES[f]) } } : {}),
+  };
+}
 
 /** Arquivo pronto para download ou envio (o `body` já é o conteúdo final). */
 export interface GeneratedReport {
@@ -165,8 +184,7 @@ export class ReportsService {
           userId,
           status: { not: 'CANCELED' },
           competenceDate: { gte: isoToDbDate(q.from), lte: isoToDbDate(q.to) },
-          ...(q.accountId ? { accountId: q.accountId } : {}),
-          ...(q.creditCardId ? { creditCardId: q.creditCardId } : {}),
+          ...filtersWhere(q),
         },
         select: { amount: true, type: true, category: { select: { name: true } } },
       });
@@ -246,8 +264,7 @@ export class ReportsService {
         userId,
         status: { not: 'CANCELED' },
         competenceDate: { gte: isoToDbDate(q.from), lte: isoToDbDate(q.to) },
-        ...(q.accountId ? { accountId: q.accountId } : {}),
-        ...(q.creditCardId ? { creditCardId: q.creditCardId } : {}),
+        ...filtersWhere(q),
       },
       select: { amount: true, type: true, competenceDate: true, category: { select: { name: true } } },
     });
@@ -394,10 +411,7 @@ export class ReportsService {
         userId,
         status: { not: 'CANCELED' },
         competenceDate: { gte: isoToDbDate(q.from), lte: isoToDbDate(q.to) },
-        ...(q.accountId ? { accountId: q.accountId } : {}),
-        ...(q.creditCardId ? { creditCardId: q.creditCardId } : {}),
-        ...(q.categoryId ? { categoryId: q.categoryId } : {}),
-        ...(q.type ? { type: q.type } : {}),
+        ...filtersWhere(q),
       },
       orderBy: [{ competenceDate: 'asc' }, { createdAt: 'asc' }],
       include: {

@@ -79,6 +79,18 @@ export const INFLOW_TYPES: TransactionType[] = [
   TransactionType.LOAN_DISBURSEMENT,
 ];
 
+/**
+ * Só relevante em `type = TRANSFER`: quando preenchido, a transferência
+ * TAMBÉM soma nos totais do dashboard como receita/despesa (ex.: dinheiro
+ * saindo pra uma reserva/poupança que o usuário quer contar como saída).
+ * `null`/ausente = comportamento de sempre — transferência é neutra.
+ */
+export const TransferFlow = {
+  INCOME: 'INCOME',
+  EXPENSE: 'EXPENSE',
+} as const;
+export type TransferFlow = (typeof TransferFlow)[keyof typeof TransferFlow];
+
 export const TransactionStatus = {
   PENDING: 'PENDING', // A pagar / a receber (afeta só o saldo projetado)
   SCHEDULED: 'SCHEDULED', // Agendado no futuro (afeta só o saldo projetado)

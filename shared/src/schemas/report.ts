@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { isoDateSchema } from './common.js';
-import { transactionTypeSchema } from './transaction.js';
 
 /** Formato do arquivo gerado. */
 export const reportFormatSchema = z.enum(['csv', 'pdf']);
@@ -16,6 +15,21 @@ export const reportKindSchema = z.enum([
 ]);
 export type ReportKind = z.infer<typeof reportKindSchema>;
 
+/** Grandes grupos de lançamento que o relatório pode incluir/excluir. */
+export const reportFlowSchema = z.enum(['income', 'expense', 'card', 'transfer']);
+export type ReportFlow = z.infer<typeof reportFlowSchema>;
+
+/** Aceita array (JSON, POST) ou lista separada por vírgula (querystring, GET). */
+const idListSchema = z
+  .union([z.array(z.string()), z.string()])
+  .transform((v) => (Array.isArray(v) ? v : v.split(',').filter(Boolean)))
+  .optional();
+
+const flowListSchema = z
+  .union([z.array(reportFlowSchema), z.string()])
+  .transform((v) => (Array.isArray(v) ? v : v.split(',').filter(Boolean)) as ReportFlow[])
+  .optional();
+
 /**
  * Seleção de um relatório: o que gerar, em que formato e sobre qual recorte de
  * dados. É compartilhada pelo download (`GET /reports/generate`) e pelo envio
@@ -26,10 +40,13 @@ export const reportSelectionSchema = z.object({
   format: reportFormatSchema,
   from: isoDateSchema,
   to: isoDateSchema,
-  accountId: z.string().optional(),
-  creditCardId: z.string().optional(),
+  /** vazio/ausente = todas as contas */
+  accountIds: idListSchema,
+  /** vazio/ausente = todos os cartões */
+  creditCardIds: idListSchema,
   categoryId: z.string().optional(),
-  type: transactionTypeSchema.optional(),
+  /** vazio/ausente = todos os grupos (receitas, despesas, cartão, transferências) */
+  flows: flowListSchema,
   /** admin: gerar o relatório de outro usuário */
   userId: z.string().optional(),
 });

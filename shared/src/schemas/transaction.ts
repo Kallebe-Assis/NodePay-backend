@@ -4,6 +4,7 @@ import {
   RecurrenceMode,
   TransactionStatus,
   TransactionType,
+  TransferFlow,
 } from '../constants.js';
 import { centsSchema, isoDateSchema, paginationQuerySchema } from './common.js';
 
@@ -11,6 +12,7 @@ export const transactionTypeSchema = z.nativeEnum(TransactionType);
 export const transactionStatusSchema = z.nativeEnum(TransactionStatus);
 export const recurrenceModeSchema = z.nativeEnum(RecurrenceMode);
 export const recurrenceFrequencySchema = z.nativeEnum(RecurrenceFrequency);
+export const transferFlowSchema = z.nativeEnum(TransferFlow);
 
 /**
  * Bloco de recorrência da Tela 1 ("Esta despesa se repete?").
@@ -23,6 +25,12 @@ export const recurrenceInputSchema = z.discriminatedUnion('mode', [
   z.object({
     mode: z.literal(RecurrenceMode.INSTALLMENT),
     installments: z.number().int().min(2).max(360),
+    /**
+     * Pra registrar uma dívida que já tinha parcelas pagas ANTES de existir no
+     * NodePay: só lança a partir desta (as anteriores não são criadas). `date`
+     * continua sendo a data da parcela 1 (a original), não a de hoje.
+     */
+    startInstallment: z.number().int().min(1).optional(),
   }),
   z.object({
     mode: z.literal(RecurrenceMode.FIXED),
@@ -47,6 +55,8 @@ const optionalExtras = {
   tags: z.array(tagSchema).max(10).optional(),
   /** local de compra (opcional) — ver /places */
   placeId: z.string().optional(),
+  /** soma nos totais/dashboard? default true — desligar não afeta o saldo da conta. */
+  includeInTotals: z.boolean().default(true),
 };
 
 /** ---- Tela 1: lançamento em conta (despesa OU receita) ---- */
@@ -89,6 +99,8 @@ export const cardEntryBodySchema = z.object({
    *  - true: `amount` é o valor de CADA parcela (total = amount × installments)
    */
   amountIsPerInstallment: z.boolean().optional(),
+  /** Igual ao de `recurrenceInputSchema` — pra registrar um parcelamento no cartão já em andamento. */
+  startInstallment: z.number().int().min(1).optional(),
   ...optionalExtras,
 });
 export type CardEntryBody = z.infer<typeof cardEntryBodySchema>;
@@ -102,6 +114,15 @@ export const transferBodySchema = z.object({
   fromAccountId: z.string().min(1),
   toAccountId: z.string().min(1),
   paid: z.boolean().default(true),
+  /** opcional — ex.: categorizar como "Poupança" */
+  categoryId: z.string().optional(),
+  /**
+   * Por padrão uma transferência é neutra (não soma nos totais). Preencher
+   * conta o valor como receita/despesa também — ex.: dinheiro indo pra uma
+   * conta-reserva que o usuário quer ver como saída no dashboard.
+   */
+  transferFlow: transferFlowSchema.nullable().optional(),
+  includeInTotals: z.boolean().default(true),
 });
 export type TransferBody = z.infer<typeof transferBodySchema>;
 
@@ -130,6 +151,10 @@ export const updateTransactionBodySchema = z.object({
   tags: z.array(tagSchema).max(10).optional(),
   /** string vazia = remover o local de compra */
   placeId: z.string().optional(),
+  /** soma nos totais/dashboard? (não afeta o saldo da conta) */
+  includeInTotals: z.boolean().optional(),
+  /** só faz efeito num lançamento type=TRANSFER — ver transferBodySchema */
+  transferFlow: transferFlowSchema.nullable().optional(),
   /** Ao editar um item de uma série: alcance da alteração. */
   scope: z.enum(['one', 'forward', 'all']).default('one'),
   /**
@@ -235,6 +260,8 @@ export const transactionSchema = z.object({
   loanId: z.string().nullable(),
   transferGroupId: z.string().nullable(),
   transferToAccountId: z.string().nullable(),
+  transferFlow: transferFlowSchema.nullable(),
+  includeInTotals: z.boolean(),
   remindTelegram: z.boolean(),
   remindDaysBefore: z.number().int(),
   createdAt: z.string(),
@@ -254,7 +281,7 @@ export interface InstallmentPreviewRow {
  * ------------------------------------------------------------------------- */
 export const IMPORT_MAX_ROWS = 50;
 
-/** Cabeçalhos do modelo CSV (nesta ordem). */
+/** Cabeçalhos do modelo CSV (nesta ordem) — só `data`..`pago` são obrigatórias. */
 export const IMPORT_CSV_HEADERS = [
   'data',
   'tipo',
@@ -263,6 +290,10 @@ export const IMPORT_CSV_HEADERS = [
   'conta',
   'categoria',
   'pago',
+  'data_pagamento',
+  'local',
+  'etiquetas',
+  'observacoes',
 ] as const;
 
 /** Uma linha já analisada e validada pelo servidor. */
@@ -278,6 +309,11 @@ export const importRowSchema = z.object({
   accountName: z.string(),
   categoryName: z.string().nullable(),
   paid: z.boolean(),
+  /** data de pagamento (efetiva se pago, prevista se pendente) — ausente = usa `date` */
+  paymentDate: z.string(),
+  placeName: z.string().nullable(),
+  tags: z.array(z.string()),
+  notes: z.string().nullable(),
 });
 export type ImportRow = z.infer<typeof importRowSchema>;
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildPlacement,
   buildSchedule,
   distribute,
   invoicesForInstallments,
@@ -48,6 +49,36 @@ describe('regra de ouro do cartão', () => {
     expect(p.referenceMonth).toBe('2026-10-01');
     expect(p.closingDate).toBe('2026-10-05');
     expect(p.dueDate).toBe('2026-10-10');
+  });
+
+  it('fecha dia 25, vence dia 2 (do mês seguinte)', () => {
+    const p = buildPlacement(2026, 3, { closingDay: 25, dueDay: 2 });
+    expect(p.closingDate).toBe('2026-03-25');
+    expect(p.dueDate).toBe('2026-04-02');
+    expect(p.dueDate > p.closingDate).toBe(true);
+  });
+
+  it('vencimento nunca cai no mesmo dia do fechamento em mês curto (clamp de fev.)', () => {
+    // 2026 não é bissexto — fevereiro tem 28 dias. fecha 30/vence 31 clampariam
+    // os dois pro dia 28 se não empurrasse o vencimento pro mês seguinte.
+    const p1 = buildPlacement(2026, 2, { closingDay: 30, dueDay: 31 });
+    expect(p1.closingDate).toBe('2026-02-28');
+    expect(p1.dueDate > p1.closingDate).toBe(true);
+
+    const p2 = buildPlacement(2026, 2, { closingDay: 29, dueDay: 30 });
+    expect(p2.closingDate).toBe('2026-02-28');
+    expect(p2.dueDate > p2.closingDate).toBe(true);
+  });
+
+  it('vencimento é sempre depois do fechamento, para qualquer combinação de dias', () => {
+    for (let closingDay = 1; closingDay <= 31; closingDay++) {
+      for (let dueDay = 1; dueDay <= 31; dueDay++) {
+        if (closingDay === dueDay) continue; // combinação bloqueada na validação do cartão
+        // fevereiro (mês mais curto) é o pior caso pra clamp de dia-do-mês
+        const p = buildPlacement(2026, 2, { closingDay, dueDay });
+        expect(p.dueDate > p.closingDate).toBe(true);
+      }
+    }
   });
 });
 

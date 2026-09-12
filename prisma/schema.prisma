@@ -54,6 +54,15 @@ enum TransactionType {
   LOAN_INSTALLMENT
 }
 
+/// Só usado em Transaction.transferFlow (type = TRANSFER): quando preenchido,
+/// a transferência TAMBÉM soma nos totais do dashboard como receita/despesa
+/// (ex.: uma "transferência" pra reserva/poupança que o usuário quer contar
+/// como saída). null = comportamento de sempre — transferência é neutra.
+enum TransferFlow {
+  INCOME
+  EXPENSE
+}
+
 enum TransactionStatus {
   PENDING
   SCHEDULED
@@ -401,6 +410,14 @@ model Transaction {
   transferGroupId     String?
   transferToAccountId String?
   transferToAccount   Account? @relation("TransferToAccount", fields: [transferToAccountId], references: [id], onDelete: SetNull)
+  /// só em type=TRANSFER — ver doc do enum TransferFlow
+  transferFlow        TransferFlow?
+
+  /// se falso, este lançamento fica de fora dos totais/dashboard (o saldo da
+  /// conta continua sendo afetado normalmente — é só uma questão de contagem).
+  /// Ex.: pagamento de fatura que o usuário prefere não contar como despesa
+  /// porque já contabilizou cada compra do cartão separadamente.
+  includeInTotals Boolean @default(true)
 
   // lembrete no Telegram antes do vencimento
   remindTelegram   Boolean   @default(false)

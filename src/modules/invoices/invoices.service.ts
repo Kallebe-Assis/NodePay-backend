@@ -61,18 +61,27 @@ export class InvoicesService {
     return this.present(updated);
   }
 
-  /** Reabre uma fatura FECHADA (não paga) — volta para OPEN. */
+  /**
+   * Reabre uma fatura FECHADA ou PAGA — volta para OPEN. Reabrir uma fatura
+   * PAGA desfaz o pagamento (apaga o lançamento INVOICE_PAYMENT gerado); o
+   * frontend confirma isso com o usuário antes de chamar esta rota.
+   */
   async reopen(scope: { userId?: string }, id: string) {
     const inv = await this.db.invoice.findFirst({
       where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
     });
     if (!inv) throw Errors.notFound('Fatura');
-    if (inv.status === 'PAID') {
-      throw Errors.badRequest('Fatura já foi paga — estorne o pagamento antes de reabrir.');
-    }
-    if (inv.status !== 'CLOSED') throw Errors.badRequest('Só é possível reabrir uma fatura fechada.');
-    const updated = await this.db.invoice.update({ where: { id }, data: { status: 'OPEN' } });
-    return this.present(updated);
+    if (inv.status === 'OPEN') throw Errors.badRequest('Fatura já está aberta.');
+
+    return this.db.$transaction(async (tx) => {
+      if (inv.status === 'PAID' && inv.paidTransactionId) {
+        await tx.transaction.delete({ where: { id: inv.paidTransactionId } }).catch(() => undefined);
+      }
+      await tx.invoice.update({ where: { id }, data: { status: 'OPEN', paidTransactionId: null } });
+      await recalcInvoiceTotal(tx, id);
+      const fresh = await tx.invoice.findUniqueOrThrow({ where: { id } });
+      return this.present(fresh);
+    });
   }
 
   /** Paga a fatura: gera um lançamento INVOICE_PAYMENT na conta escolhida. */
@@ -108,6 +117,7 @@ export class InvoicesService {
           status: 'PAID',
           accountId: body.accountId,
           creditCardId: fresh.creditCardId,
+          includeInTotals: body.includeInTotals ?? true,
         },
       });
 
