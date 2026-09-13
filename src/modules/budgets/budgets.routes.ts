@@ -1,11 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
-import {
-  budgetBulkInputSchema,
-  budgetInputSchema,
-  budgetListResponseSchema,
-} from '@nodepay/shared';
+import { budgetBulkInputSchema, budgetListResponseSchema } from '@nodepay/shared';
 import { BudgetsService } from './budgets.service.js';
 import { ownerFilter, targetOwnerId } from '../../lib/scope.js';
 
@@ -27,19 +23,6 @@ export async function budgetRoutes(fastify: FastifyInstance) {
   );
 
   app.put(
-    '/',
-    {
-      schema: {
-        tags: ['budgets'],
-        querystring: z.object({ userId: z.string().optional() }),
-        body: budgetInputSchema,
-        response: { 200: budgetListResponseSchema },
-      },
-    },
-    (req) => svc().upsert(targetOwnerId(req, req.query.userId), req.body),
-  );
-
-  app.put(
     '/bulk',
     {
       schema: {
@@ -50,11 +33,5 @@ export async function budgetRoutes(fastify: FastifyInstance) {
       },
     },
     (req) => svc().bulk(targetOwnerId(req, req.query.userId), req.body),
-  );
-
-  app.delete(
-    '/:id',
-    { schema: { tags: ['budgets'], params: z.object({ id: z.string() }) } },
-    (req) => svc().remove(ownerFilter(req), req.params.id),
   );
 }

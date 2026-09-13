@@ -1,5 +1,5 @@
 import type { PrismaClient, TransactionType } from '@prisma/client';
-import type { BudgetBulkInput, BudgetInput, IsoDate } from '@nodepay/shared';
+import type { BudgetBulkInput, IsoDate } from '@nodepay/shared';
 import { endOfMonth, startOfMonth, todaySP } from '@nodepay/shared';
 import { Errors } from '../../lib/errors.js';
 import { nb, numToBig } from '../../lib/money.js';
@@ -67,24 +67,6 @@ export class BudgetsService {
     };
   }
 
-  async upsert(ownerId: string, body: BudgetInput) {
-    await this.assertExpenseCategory(ownerId, body.categoryId);
-    await this.db.budget.upsert({
-      where: { userId_categoryId: { userId: ownerId, categoryId: body.categoryId } },
-      create: {
-        userId: ownerId,
-        categoryId: body.categoryId,
-        amount: numToBig(body.amount),
-        active: body.active ?? true,
-      },
-      update: {
-        amount: numToBig(body.amount),
-        ...(body.active === undefined ? {} : { active: body.active }),
-      },
-    });
-    return this.list({ userId: ownerId });
-  }
-
   /** Define/zera vários tetos de uma vez. amount 0 => remove o orçamento. */
   async bulk(ownerId: string, body: BudgetBulkInput) {
     const ids = body.items.map((i) => i.categoryId);
@@ -106,22 +88,5 @@ export class BudgetsService {
       ),
     );
     return this.list({ userId: ownerId });
-  }
-
-  async remove(scope: Scope, id: string) {
-    const b = await this.db.budget.findFirst({
-      where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
-    });
-    if (!b) throw Errors.notFound('Orçamento');
-    await this.db.budget.delete({ where: { id } });
-    return { deleted: true };
-  }
-
-  private async assertExpenseCategory(userId: string, categoryId: string) {
-    const c = await this.db.category.findFirst({
-      where: { id: categoryId, userId, kind: 'EXPENSE' },
-      select: { id: true },
-    });
-    if (!c) throw Errors.badRequest('Selecione uma categoria de despesa válida.');
   }
 }
