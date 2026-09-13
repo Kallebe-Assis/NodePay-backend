@@ -76,6 +76,12 @@ export class InvoicesService {
     return this.db.$transaction(async (tx) => {
       if (inv.status === 'PAID' && inv.paidTransactionId) {
         await tx.transaction.delete({ where: { id: inv.paidTransactionId } }).catch(() => undefined);
+        // Desfaz o pagamento: as compras dessa fatura que tinham virado PAID
+        // (junto com a fatura) voltam a ficar pendentes.
+        await tx.transaction.updateMany({
+          where: { invoiceId: id, status: 'PAID' },
+          data: { status: 'PENDING', paidDate: null, paidAmount: numToBig(0) },
+        });
       }
       await tx.invoice.update({ where: { id }, data: { status: 'OPEN', paidTransactionId: null } });
       await recalcInvoiceTotal(tx, id);
@@ -125,6 +131,22 @@ export class InvoicesService {
         where: { id },
         data: { status: 'PAID', paidTransactionId: payment.id },
       });
+
+      // Pagar a fatura quita cada compra dela — sem isso, as parcelas
+      // continuavam "Pendente" pra sempre mesmo com a fatura já paga.
+      const items = await tx.transaction.findMany({
+        where: { invoiceId: id, status: { not: 'CANCELED' } },
+        select: { id: true, amount: true },
+      });
+      await Promise.all(
+        items.map((it) =>
+          tx.transaction.update({
+            where: { id: it.id },
+            data: { status: 'PAID', paidDate: isoToDbDate(body.paidDate), paidAmount: it.amount },
+          }),
+        ),
+      );
+
       return this.present(updated);
     });
   }
