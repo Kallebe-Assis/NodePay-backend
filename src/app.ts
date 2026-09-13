@@ -37,6 +37,7 @@ import { categoryRuleRoutes } from './modules/category-rules/category-rules.rout
 import { placeRoutes } from './modules/places/places.routes.js';
 import { recurrenceRoutes } from './modules/recurrences/recurrences.routes.js';
 import { searchRoutes } from './modules/search/search.routes.js';
+import { changelogRoutes } from './modules/changelog/changelog.routes.js';
 
 export async function buildApp(): Promise<AppInstance> {
   const app = Fastify({
@@ -100,6 +101,7 @@ export async function buildApp(): Promise<AppInstance> {
       await api.register(reportRoutes, { prefix: '/reports' });
       await api.register(settingsRoutes, { prefix: '/settings' });
       await api.register(notificationRoutes, { prefix: '/notifications' });
+      await api.register(changelogRoutes, { prefix: '/changelog' });
       await api.register(cronRoutes, { prefix: '/internal' });
     },
     { prefix: '/api/v1' },

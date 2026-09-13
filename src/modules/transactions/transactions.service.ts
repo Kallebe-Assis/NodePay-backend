@@ -353,13 +353,30 @@ export class TransactionsService {
       };
     }
 
+    // Busca por conta, descrição, local de compra, categoria ou subcategoria.
+    // Combinada com `categoryFilter` via `AND` (não `...spread`) porque as duas
+    // usam `OR` — espalhar os dois faria a segunda chave `OR` sobrescrever a
+    // primeira, silenciosamente descartando o filtro de categoria.
+    const searchFilter: Prisma.TransactionWhereInput = q.search
+      ? {
+          OR: [
+            { description: { contains: q.search, mode: 'insensitive' } },
+            { account: { name: { contains: q.search, mode: 'insensitive' } } },
+            { place: { name: { contains: q.search, mode: 'insensitive' } } },
+            { category: { name: { contains: q.search, mode: 'insensitive' } } },
+            { category: { parent: { name: { contains: q.search, mode: 'insensitive' } } } },
+          ],
+        }
+      : {};
+    const andFilters = [categoryFilter, searchFilter].filter((f) => Object.keys(f).length > 0);
+
     return {
       ...(scope.userId ? { userId: scope.userId } : {}),
       ...(q.accountId ? { accountId: q.accountId } : {}),
       ...(q.creditCardId ? { creditCardId: q.creditCardId } : {}),
       ...(q.placeId ? { placeId: q.placeId } : {}),
       ...(q.tag ? { tags: { has: q.tag } } : {}),
-      ...categoryFilter,
+      ...(andFilters.length ? { AND: andFilters } : {}),
       ...(q.type
         ? { type: q.type }
         : q.flow === 'expense'
@@ -380,7 +397,6 @@ export class TransactionsService {
             },
           }
         : {}),
-      ...(q.search ? { description: { contains: q.search, mode: 'insensitive' } } : {}),
       ...(q.from || q.to
         ? {
             competenceDate: {

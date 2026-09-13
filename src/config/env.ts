@@ -47,6 +47,9 @@ const schema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_BOT_ENABLED: booleanish(false),
 
+  /** Opcional — sem ele o changelog ainda funciona, só com limite de taxa menor na API do GitHub. */
+  GITHUB_TOKEN: z.string().optional(),
+
   BACKUP_ENABLED: booleanish(false),
   B2_S3_ENDPOINT: z.string().optional(),
   B2_REGION: z.string().optional(),

@@ -24,3 +24,4 @@ export * from './schemas/category-rule.js';
 export * from './schemas/recurrence.js';
 export * from './schemas/search.js';
 export * from './schemas/place.js';
+export * from './schemas/changelog.js';
