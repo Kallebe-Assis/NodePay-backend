@@ -69,12 +69,18 @@ export class TransactionsService {
       tags: body.tags ?? [],
       placeId: body.placeId || null,
       includeInTotals: body.includeInTotals,
+      payeeName: body.payeeName || null,
+      paymentMethod: body.paymentMethod || null,
+      boletoLine: body.boletoLine || null,
+      pixCopyPaste: body.pixCopyPaste || null,
     };
 
-    // Toda despesa/receita guarda 2 datas: competência (`date`) e pagamento
-    // (`paymentDate`). Sem `paymentDate` informado, o pagamento planejado cai
-    // na própria competência.
+    // Tríade de datas: competência (`date`), vencimento (`dueDate` — prazo
+    // limite, opcional) e pagamento (`paymentDate` — efetiva se paga, prevista
+    // se pendente). Sem informar, vencimento cai no pagamento e pagamento cai
+    // na própria competência — preserva o comportamento de antes da Tríade.
     const paymentIso = body.paymentDate ?? body.date;
+    const dueIso = body.dueDate ?? paymentIso;
 
     return this.db.$transaction(async (tx) => {
       // ---- lançamento único ----
@@ -87,9 +93,9 @@ export class TransactionsService {
             paidAmount: numToBig(body.paid ? body.amount : 0),
             description: body.description,
             competenceDate: isoToDbDate(body.date),
-            dueDate: isoToDbDate(paymentIso),
+            dueDate: isoToDbDate(dueIso),
             paidDate: body.paid ? isoToDbDate(paymentIso) : null,
-            status: statusFor(body.paid, paymentIso, today),
+            status: statusFor(body.paid, dueIso, today),
             accountId: body.accountId,
             categoryId: body.categoryId || null,
             ...remind,
@@ -129,7 +135,7 @@ export class TransactionsService {
         for (let i = start - 1; i < n; i++) {
           const date = addMonths(body.date, i);
           const paidThis = body.paid && i === start - 1;
-          const dueIso = paidThis ? paymentIso : date;
+          const occDueIso = paidThis ? paymentIso : date;
           rows.push(
             await tx.transaction.create({
               data: {
@@ -139,9 +145,9 @@ export class TransactionsService {
                 paidAmount: numToBig(paidThis ? parts[i]! : 0),
                 description: `${body.description} (${i + 1}/${n})`,
                 competenceDate: isoToDbDate(date),
-                dueDate: isoToDbDate(dueIso),
+                dueDate: isoToDbDate(occDueIso),
                 paidDate: paidThis ? isoToDbDate(paymentIso) : null,
-                status: statusFor(paidThis, dueIso, today),
+                status: statusFor(paidThis, occDueIso, today),
                 accountId: body.accountId,
                 categoryId: body.categoryId || null,
                 recurrenceId: rec.id,
@@ -597,6 +603,17 @@ export class TransactionsService {
     if (body.categoryId) await this.assertCategory(current.userId, body.categoryId);
     if (body.placeId) await this.assertPlace(current.userId, body.placeId);
 
+    // Transferência: "de"/"para" não podem ficar iguais depois da edição.
+    if (current.type === 'TRANSFER') {
+      if (body.accountId) await this.assertAccount(current.userId, body.accountId);
+      if (body.transferToAccountId) await this.assertAccount(current.userId, body.transferToAccountId);
+      const nextFrom = body.accountId ?? current.accountId;
+      const nextTo = body.transferToAccountId ?? current.transferToAccountId;
+      if (nextFrom && nextTo && nextFrom === nextTo) {
+        throw Errors.badRequest('Conta de origem e destino devem ser diferentes');
+      }
+    }
+
     // Mudar a data de uma parcela (cartão ou avulsa): o front pergunta antes
     // se é só esta ou se remaneja o grupo todo (`body.applyToInstallments`).
     if (body.date && current.installmentGroupId && dbDateToIso(current.competenceDate) !== body.date) {
@@ -625,6 +642,7 @@ export class TransactionsService {
             : undefined,
         categoryId: body.categoryId === '' ? null : body.categoryId,
         accountId: body.accountId,
+        transferToAccountId: body.transferToAccountId,
         status: body.status,
         paidDate:
           body.paidDate === null ? null : body.paidDate ? isoToDbDate(body.paidDate) : undefined,
@@ -634,6 +652,10 @@ export class TransactionsService {
         placeId: body.placeId === '' ? null : body.placeId,
         includeInTotals: body.includeInTotals,
         transferFlow: body.transferFlow,
+        payeeName: body.payeeName === '' ? null : body.payeeName,
+        paymentMethod: body.paymentMethod,
+        boletoLine: body.boletoLine === '' ? null : body.boletoLine,
+        pixCopyPaste: body.pixCopyPaste === '' ? null : body.pixCopyPaste,
       },
     });
     if (row.invoiceId) await recalcInvoiceTotal(this.db, row.invoiceId);
@@ -1082,6 +1104,10 @@ export class TransactionsService {
       transferToAccountId: r.transferToAccountId,
       transferFlow: r.transferFlow ?? null,
       includeInTotals: r.includeInTotals ?? true,
+      payeeName: r.payeeName ?? null,
+      paymentMethod: r.paymentMethod ?? null,
+      boletoLine: r.boletoLine ?? null,
+      pixCopyPaste: r.pixCopyPaste ?? null,
       remindTelegram: r.remindTelegram ?? false,
       remindDaysBefore: r.remindDaysBefore ?? 1,
       createdAt: r.createdAt.toISOString(),

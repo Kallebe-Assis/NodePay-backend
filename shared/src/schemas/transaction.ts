@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  PaymentMethod,
   RecurrenceFrequency,
   RecurrenceMode,
   TransactionStatus,
@@ -13,6 +14,17 @@ export const transactionStatusSchema = z.nativeEnum(TransactionStatus);
 export const recurrenceModeSchema = z.nativeEnum(RecurrenceMode);
 export const recurrenceFrequencySchema = z.nativeEnum(RecurrenceFrequency);
 export const transferFlowSchema = z.nativeEnum(TransferFlow);
+export const paymentMethodSchema = z.nativeEnum(PaymentMethod);
+
+/** Detalhes de pagamento opcionais de uma despesa — "opções avançadas" do formulário. */
+const paymentDetailsExtras = {
+  /** vencimento (prazo limite) — ausente = usa a data de pagamento, ou a competência */
+  dueDate: isoDateSchema.optional(),
+  payeeName: z.string().max(160).optional(),
+  paymentMethod: paymentMethodSchema.optional(),
+  boletoLine: z.string().max(200).optional(),
+  pixCopyPaste: z.string().max(700).optional(),
+};
 
 /**
  * Bloco de recorrência da Tela 1 ("Esta despesa se repete?").
@@ -68,7 +80,7 @@ export const accountEntryBodySchema = z.object({
   date: isoDateSchema, // data de competência (data do lançamento)
   /**
    * Data do pagamento. Se `paid`, é a data em que liquidou; se pendente, é a
-   * data de pagamento planejada (vencimento). Ausente => usa `date`.
+   * data de pagamento planejada. Ausente => usa `dueDate` ?? `date`.
    */
   paymentDate: isoDateSchema.optional(),
   accountId: z.string().min(1, 'Selecione a conta'),
@@ -76,6 +88,7 @@ export const accountEntryBodySchema = z.object({
   categoryId: z.string().optional(),
   paid: z.boolean(), // toggle PAGO / PENDENTE
   recurrence: recurrenceInputSchema.default({ mode: 'none' }),
+  ...paymentDetailsExtras,
   /** lembrete no Telegram X dias antes do vencimento */
   remindTelegram: z.boolean().default(false),
   remindDaysBefore: z.number().int().min(0).max(30).default(1),
@@ -143,6 +156,8 @@ export const updateTransactionBodySchema = z.object({
   /** string vazia = remover a categoria */
   categoryId: z.string().optional(),
   accountId: z.string().optional(),
+  /** só faz efeito num lançamento type=TRANSFER — a ponta de destino */
+  transferToAccountId: z.string().optional(),
   status: transactionStatusSchema.optional(),
   paidDate: isoDateSchema.nullable().optional(),
   /** quanto já foi pago (centavos, 0+) — em conjunto com status PARTIAL */
@@ -155,6 +170,11 @@ export const updateTransactionBodySchema = z.object({
   includeInTotals: z.boolean().optional(),
   /** só faz efeito num lançamento type=TRANSFER — ver transferBodySchema */
   transferFlow: transferFlowSchema.nullable().optional(),
+  /** string vazia = remover */
+  payeeName: z.string().max(160).optional(),
+  paymentMethod: paymentMethodSchema.nullable().optional(),
+  boletoLine: z.string().max(200).optional(),
+  pixCopyPaste: z.string().max(700).optional(),
   /** Ao editar um item de uma série: alcance da alteração. */
   scope: z.enum(['one', 'forward', 'all']).default('one'),
   /**
@@ -262,6 +282,10 @@ export const transactionSchema = z.object({
   transferToAccountId: z.string().nullable(),
   transferFlow: transferFlowSchema.nullable(),
   includeInTotals: z.boolean(),
+  payeeName: z.string().nullable(),
+  paymentMethod: paymentMethodSchema.nullable(),
+  boletoLine: z.string().nullable(),
+  pixCopyPaste: z.string().nullable(),
   remindTelegram: z.boolean(),
   remindDaysBefore: z.number().int(),
   createdAt: z.string(),

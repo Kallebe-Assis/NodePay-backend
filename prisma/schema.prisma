@@ -63,6 +63,19 @@ enum TransferFlow {
   EXPENSE
 }
 
+/// Forma de pagamento de uma despesa — só informativo, não muda o tipo do
+/// lançamento nem afeta faturas de cartão (a compra no cartão continua sendo
+/// registrada pela tela própria, com type=CARD_EXPENSE).
+enum PaymentMethod {
+  PIX
+  BOLETO
+  CASH
+  DEBIT_CARD
+  CREDIT_CARD
+  BANK_TRANSFER
+  OTHER
+}
+
 enum TransactionStatus {
   PENDING
   SCHEDULED
@@ -418,6 +431,14 @@ model Transaction {
   /// Ex.: pagamento de fatura que o usuário prefere não contar como despesa
   /// porque já contabilizou cada compra do cartão separadamente.
   includeInTotals Boolean @default(true)
+
+  /// favorecido/fornecedor — pra quem o dinheiro está indo (relatórios "pra quem")
+  payeeName     String?
+  paymentMethod PaymentMethod?
+  /// código de barras / linha digitável do boleto (texto puro, pra copiar e colar)
+  boletoLine    String?
+  /// Pix copia-e-cola (ou chave) do recebedor
+  pixCopyPaste  String?
 
   // lembrete no Telegram antes do vencimento
   remindTelegram   Boolean   @default(false)

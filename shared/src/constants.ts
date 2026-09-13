@@ -67,6 +67,28 @@ export const TransactionType = {
 } as const;
 export type TransactionType = (typeof TransactionType)[keyof typeof TransactionType];
 
+/** Forma de pagamento de uma despesa — só informativo (não muda o tipo do lançamento). */
+export const PaymentMethod = {
+  PIX: 'PIX',
+  BOLETO: 'BOLETO',
+  CASH: 'CASH',
+  DEBIT_CARD: 'DEBIT_CARD',
+  CREDIT_CARD: 'CREDIT_CARD',
+  BANK_TRANSFER: 'BANK_TRANSFER',
+  OTHER: 'OTHER',
+} as const;
+export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
+
+export const PaymentMethodLabel: Record<PaymentMethod, string> = {
+  PIX: 'Pix',
+  BOLETO: 'Boleto',
+  CASH: 'Dinheiro',
+  DEBIT_CARD: 'Cartão de débito',
+  CREDIT_CARD: 'Cartão de crédito',
+  BANK_TRANSFER: 'Transferência',
+  OTHER: 'Outro',
+};
+
 /** Tipos que representam saída de dinheiro da conta. */
 export const OUTFLOW_TYPES: TransactionType[] = [
   TransactionType.EXPENSE,

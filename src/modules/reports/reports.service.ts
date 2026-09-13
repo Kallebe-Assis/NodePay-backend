@@ -1,4 +1,4 @@
-import type { PrismaClient, Prisma, TransactionType } from '@prisma/client';
+import type { PrismaClient, Prisma } from '@prisma/client';
 import {
   formatBRL,
   formatLongDate,
@@ -6,13 +6,13 @@ import {
   type GenerateReportQuery,
   INFLOW_TYPES,
   OUTFLOW_TYPES,
-  type ReportFlow,
   todaySP,
 } from '@nodepay/shared';
 import { nb } from '../../lib/money.js';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
 import { buildStatementCsv, type StatementRow } from './csv.js';
 import { renderPdf, type PdfTableSection } from './pdf.js';
+import { accountCardFlowWhere } from './filters.js';
 
 /** Rótulo humano de cada tipo de lançamento, usado nas colunas do relatório. */
 const TYPE_LABEL: Record<string, string> = {
@@ -34,21 +34,11 @@ const STATUS_LABEL: Record<string, string> = {
   CANCELED: 'Cancelado',
 };
 
-/** Tipos de lançamento que cada grupo do filtro "flows" cobre. */
-const FLOW_TYPES: Record<ReportFlow, TransactionType[]> = {
-  income: ['INCOME', 'LOAN_DISBURSEMENT'],
-  expense: ['EXPENSE', 'LOAN_INSTALLMENT', 'INVOICE_PAYMENT'],
-  card: ['CARD_EXPENSE'],
-  transfer: ['TRANSFER'],
-};
-
 /** Monta o `where` comum de contas/cartões/grupos a partir da seleção do relatório. */
 function filtersWhere(q: GenerateReportQuery): Prisma.TransactionWhereInput {
   return {
-    ...(q.accountIds?.length ? { accountId: { in: q.accountIds } } : {}),
-    ...(q.creditCardIds?.length ? { creditCardId: { in: q.creditCardIds } } : {}),
+    ...accountCardFlowWhere(q),
     ...(q.categoryId ? { categoryId: q.categoryId } : {}),
-    ...(q.flows ? { type: { in: q.flows.flatMap((f) => FLOW_TYPES[f]) } } : {}),
   };
 }
 

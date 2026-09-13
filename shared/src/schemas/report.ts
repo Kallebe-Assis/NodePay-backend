@@ -19,13 +19,17 @@ export type ReportKind = z.infer<typeof reportKindSchema>;
 export const reportFlowSchema = z.enum(['income', 'expense', 'card', 'transfer']);
 export type ReportFlow = z.infer<typeof reportFlowSchema>;
 
-/** Aceita array (JSON, POST) ou lista separada por vírgula (querystring, GET). */
-const idListSchema = z
+/**
+ * Aceita array (JSON, POST) ou lista separada por vírgula (querystring, GET).
+ * Reaproveitado pelos filtros de contas/cartões/grupos tanto no "Gerar
+ * relatório" quanto nos "Gráficos" (mesmo componente de filtro no frontend).
+ */
+export const idListSchema = z
   .union([z.array(z.string()), z.string()])
   .transform((v) => (Array.isArray(v) ? v : v.split(',').filter(Boolean)))
   .optional();
 
-const flowListSchema = z
+export const flowListSchema = z
   .union([z.array(reportFlowSchema), z.string()])
   .transform((v) => (Array.isArray(v) ? v : v.split(',').filter(Boolean)) as ReportFlow[])
   .optional();

@@ -1,9 +1,17 @@
 import { z } from 'zod';
 import { isoDateSchema } from './common.js';
+import { flowListSchema, idListSchema } from './report.js';
 
+/** Mesmos filtros de conta/cartão/grupo do "Gerar relatório", reaproveitados nos Gráficos. */
 export const chartsQuerySchema = z.object({
   from: isoDateSchema,
   to: isoDateSchema,
+  /** vazio/ausente = todas as contas */
+  accountIds: idListSchema,
+  /** vazio/ausente = todos os cartões */
+  creditCardIds: idListSchema,
+  /** vazio/ausente = todos os grupos (receitas, despesas, cartão, transferências) */
+  flows: flowListSchema,
   userId: z.string().optional(), // admin
 });
 export type ChartsQuery = z.infer<typeof chartsQuerySchema>;

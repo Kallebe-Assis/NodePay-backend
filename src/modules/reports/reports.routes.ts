@@ -36,6 +36,11 @@ export async function reportRoutes(fastify: FastifyInstance) {
         ownerFilter(req, req.query.userId),
         req.query.from,
         req.query.to,
+        {
+          accountIds: req.query.accountIds,
+          creditCardIds: req.query.creditCardIds,
+          flows: req.query.flows,
+        },
       ),
   );
 

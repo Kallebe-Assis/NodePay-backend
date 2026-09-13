@@ -3,13 +3,22 @@ import {
   addDays,
   type ChartsResponse,
   type IsoDate,
+  type ReportFlow,
 } from '@nodepay/shared';
 import { nb } from '../../lib/money.js';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
+import { accountCardFlowWhere } from './filters.js';
 
 const IN = ['INCOME', 'LOAN_DISBURSEMENT'];
 const OUT_CASH = ['EXPENSE', 'INVOICE_PAYMENT', 'LOAN_INSTALLMENT'];
 const OUT_SPEND = ['EXPENSE', 'CARD_EXPENSE']; // visão de "onde gastei"
+
+/** Mesmos filtros do "Gerar relatório" (contas, cartões, grupos), aplicados aos Gráficos. */
+export interface ChartsFilters {
+  accountIds?: string[];
+  creditCardIds?: string[];
+  flows?: ReportFlow[];
+}
 
 export class ChartsService {
   constructor(private readonly db: PrismaClient) {}
@@ -18,6 +27,7 @@ export class ChartsService {
     scope: { userId?: string },
     from: IsoDate,
     to: IsoDate,
+    filters: ChartsFilters = {},
   ): Promise<ChartsResponse> {
     const userWhere = scope.userId ? { userId: scope.userId } : {};
 
@@ -26,6 +36,7 @@ export class ChartsService {
         ...userWhere,
         status: { not: 'CANCELED' },
         competenceDate: { gte: isoToDbDate(from), lte: isoToDbDate(to) },
+        ...accountCardFlowWhere(filters),
       },
       select: {
         type: true,
@@ -104,7 +115,7 @@ export class ChartsService {
         .map(([month, v]) => ({ month, income: v.income, expense: v.expense, net: v.income - v.expense })),
       expenseByCategory: catRows(expByCat),
       incomeByCategory: catRows(incByCat),
-      balanceEvolution: await this.balanceEvolution(scope, from, to),
+      balanceEvolution: await this.balanceEvolution(scope, from, to, filters.accountIds),
       topExpenses: [...byDescr.entries()]
         .sort(([, a], [, b]) => b - a)
         .slice(0, 8)
@@ -115,10 +126,19 @@ export class ChartsService {
   }
 
   /** saldo (contas do dashboard) acumulado ao longo do período — amostrado se muito longo */
-  private async balanceEvolution(scope: { userId?: string }, from: IsoDate, to: IsoDate) {
+  private async balanceEvolution(
+    scope: { userId?: string },
+    from: IsoDate,
+    to: IsoDate,
+    accountIds?: string[],
+  ) {
     const userWhere = scope.userId ? { userId: scope.userId } : {};
     const accounts = await this.db.account.findMany({
-      where: { ...userWhere, includeInDashboard: true },
+      where: {
+        ...userWhere,
+        includeInDashboard: true,
+        ...(accountIds?.length ? { id: { in: accountIds } } : {}),
+      },
       select: { id: true, openingBalance: true },
     });
     if (accounts.length === 0) return [];
