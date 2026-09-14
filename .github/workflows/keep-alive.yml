@@ -31,4 +31,4 @@ jobs:
             echo "Secret API_HEALTH_URL não definido — nada a fazer. Veja o comentário no topo deste arquivo."
             exit 0
           fi
-          curl -fsS --max-time 25 "${{ secrets.API_HEALTH_URL }}" && echo "" && echo "ok"
+          curl -fsS --max-time 60 "${{ secrets.API_HEALTH_URL }}" && echo "" && echo "ok"
