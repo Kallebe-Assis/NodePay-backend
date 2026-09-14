@@ -52,7 +52,7 @@ export class SettingsService {
       if (n.weeklySummary !== undefined) data.notifyWeeklySummaryChannel = n.weeklySummary;
       if (n.weeklySummaryDay !== undefined) data.weeklySummaryDay = n.weeklySummaryDay;
       if (n.weeklySummaryHour !== undefined) data.weeklySummaryHour = n.weeklySummaryHour;
-      if (n.pendingUsers !== undefined) data.notifyPendingUsers = n.pendingUsers;
+      if (n.pendingUsers !== undefined) data.notifyPendingUsersChannel = n.pendingUsers;
       if (n.lowBalanceThreshold !== undefined)
         data.lowBalanceThreshold = numToBig(n.lowBalanceThreshold);
     }
@@ -105,7 +105,7 @@ export class SettingsService {
         weeklySummary: s.notifyWeeklySummaryChannel,
         weeklySummaryDay: s.weeklySummaryDay,
         weeklySummaryHour: s.weeklySummaryHour,
-        pendingUsers: s.notifyPendingUsers,
+        pendingUsers: s.notifyPendingUsersChannel,
         lowBalanceThreshold: nb(s.lowBalanceThreshold),
       },
       appearance: {

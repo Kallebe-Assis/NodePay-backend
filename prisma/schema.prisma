@@ -632,7 +632,7 @@ model UserSettings {
   notifyBillsDueChannel       String  @default("system")
   notifyInvoiceClosingChannel String  @default("system")
   notifyLowBalanceChannel     String  @default("system")
-  notifyPendingUsers          Boolean @default(true) // só admin
+  notifyPendingUsersChannel   String  @default("system") // só admin
   lowBalanceThreshold         BigInt  @default(0) // centavos; 0 = desligado
   /// última data (YYYY-MM-DD) em que o push consolidado de telegram rodou (dedupe diário)
   notifyTelegramLastSentDate  String?

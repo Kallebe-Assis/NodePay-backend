@@ -49,7 +49,8 @@ export const notificationSettingsInputSchema = z.object({
   /** dia da semana do resumo semanal: 0=domingo … 6=sábado */
   weeklySummaryDay: z.number().int().min(0).max(6),
   weeklySummaryHour: z.number().int().min(0).max(23),
-  pendingUsers: z.boolean(),
+  /** só admin — mesmo canal off|system|telegram|both dos demais tipos */
+  pendingUsers: notificationChannelSchema,
   lowBalanceThreshold: z.number().int().nonnegative(), // centavos
 });
 export type NotificationSettingsInput = z.infer<typeof notificationSettingsInputSchema>;
@@ -97,7 +98,7 @@ export const settingsSchema = z.object({
     weeklySummary: notificationChannelSchema,
     weeklySummaryDay: z.number().int(),
     weeklySummaryHour: z.number().int(),
-    pendingUsers: z.boolean(),
+    pendingUsers: notificationChannelSchema,
     lowBalanceThreshold: z.number().int(),
   }),
   appearance: z.object({

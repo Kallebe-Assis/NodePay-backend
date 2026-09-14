@@ -34,7 +34,7 @@ export class NotificationsService {
       lowBalance: includesSystem(settings?.notifyLowBalanceChannel ?? 'system'),
       weeklySummary: includesSystem(settings?.notifyWeeklySummaryChannel ?? 'off'),
       weeklySummaryDay: settings?.weeklySummaryDay ?? 1,
-      pendingUsers: settings?.notifyPendingUsers ?? true,
+      pendingUsers: includesSystem(settings?.notifyPendingUsersChannel ?? 'system'),
       threshold: settings ? nb(settings.lowBalanceThreshold) : 0,
     };
 

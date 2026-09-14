@@ -183,6 +183,7 @@ const tasks: Record<TaskName, TaskFn> = {
           { notifyBillsDueChannel: { in: ['telegram', 'both'] } },
           { notifyInvoiceClosingChannel: { in: ['telegram', 'both'] } },
           { notifyLowBalanceChannel: { in: ['telegram', 'both'] } },
+          { notifyPendingUsersChannel: { in: ['telegram', 'both'] } },
         ],
         AND: [
           { OR: [{ notifyTelegramLastSentDate: null }, { notifyTelegramLastSentDate: { not: today } }] },
@@ -193,7 +194,9 @@ const tasks: Record<TaskName, TaskFn> = {
         notifyBillsDueChannel: true,
         notifyInvoiceClosingChannel: true,
         notifyLowBalanceChannel: true,
+        notifyPendingUsersChannel: true,
         lowBalanceThreshold: true,
+        user: { select: { role: true } },
       },
     });
 
@@ -225,6 +228,11 @@ const tasks: Record<TaskName, TaskFn> = {
         const balances = await computeBalances(db, { userId: s.userId });
         const total = [...balances.values()].reduce((sum, b) => sum + b.projectedBalance, 0);
         if (total < threshold) lines.push(`⚠️ <b>Saldo projetado baixo</b>: ${formatBRL(total)}`);
+      }
+
+      if (isTelegramChannel(s.notifyPendingUsersChannel) && s.user.role === 'ADMIN') {
+        const pending = await db.user.count({ where: { status: 'PENDING' } });
+        if (pending > 0) lines.push(`👤 <b>${pending} cadastro(s) pendente(s)</b> aguardando aprovação`);
       }
 
       if (lines.length > 0) {
