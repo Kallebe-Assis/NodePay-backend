@@ -25,6 +25,12 @@ export async function cronRoutes(fastify: FastifyInstance) {
   }
   const secret = env.CRON_SECRET;
 
+  // Agendadores externos (cron-job.org etc.) mandam POST com Content-Type
+  // variado (form, text, json vazio) e sem corpo útil — aceita qualquer um
+  // aqui em vez de responder 415/400. Só vale pra este plugin (encapsulado).
+  app.removeAllContentTypeParsers();
+  app.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => done(null, body));
+
   const assertKey = (req: { headers: Record<string, unknown> }) => {
     const key = req.headers['x-cron-key'];
     if (typeof key !== 'string' || key !== secret) throw Errors.unauthorized();

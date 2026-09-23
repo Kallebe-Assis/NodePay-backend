@@ -48,6 +48,7 @@ export class ChartsService {
         dueDate: true,
         paidDate: true,
         categoryId: true,
+        placeId: true,
         recurrenceId: true,
       },
     });
@@ -58,10 +59,17 @@ export class ChartsService {
     });
     const catMap = new Map(categories.map((c) => [c.id, c]));
 
+    const places = await this.db.place.findMany({
+      where: userWhere,
+      select: { id: true, name: true, color: true },
+    });
+    const placeMap = new Map(places.map((p) => [p.id, p]));
+
     let income = 0;
     let expense = 0;
     const byMonth = new Map<string, { income: number; expense: number }>();
     const expByCat = new Map<string | null, number>();
+    const expByPlace = new Map<string | null, number>();
     const incByCat = new Map<string | null, number>();
     const byDescr = new Map<string, number>();
     let paid = 0;
@@ -91,6 +99,7 @@ export class ChartsService {
       }
       if (OUT_SPEND.includes(t.type)) {
         expByCat.set(t.categoryId, (expByCat.get(t.categoryId) ?? 0) + amt);
+        expByPlace.set(t.placeId, (expByPlace.get(t.placeId) ?? 0) + amt);
         byDescr.set(t.description, (byDescr.get(t.description) ?? 0) + amt);
       }
       byMonth.set(month, slot);
@@ -115,6 +124,14 @@ export class ChartsService {
         .map(([month, v]) => ({ month, income: v.income, expense: v.expense, net: v.income - v.expense })),
       expenseByCategory: catRows(expByCat),
       incomeByCategory: catRows(incByCat),
+      expenseByPlace: [...expByPlace.entries()]
+        .map(([placeId, total]) => ({
+          placeId,
+          name: placeId ? (placeMap.get(placeId)?.name ?? 'Sem fornecedor') : 'Sem fornecedor',
+          color: placeId ? (placeMap.get(placeId)?.color ?? null) : null,
+          total,
+        }))
+        .sort((a, b) => b.total - a.total),
       balanceEvolution: await this.balanceEvolution(scope, from, to, filters.accountIds),
       topExpenses: [...byDescr.entries()]
         .sort(([, a], [, b]) => b - a)

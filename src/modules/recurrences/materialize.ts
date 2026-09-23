@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
-import { addDays, addMonths, type IsoDate, todaySP } from '@nodepay/shared';
+import { addDays, addMonths, invoicesForInstallments, type IsoDate, todaySP } from '@nodepay/shared';
 import { dbDateToIso, isoToDbDate } from '../../lib/date.js';
+import { ensureInvoice, recalcInvoiceTotal } from '../invoices/invoice.helpers.js';
 
 /** Mantemos as recorrências FIXAS materializadas ~12 meses à frente de hoje. */
 const FIXED_HORIZON_MONTHS = 12;
@@ -34,12 +35,14 @@ export async function materializeFixedRecurrences(
       amount: true,
       description: true,
       accountId: true,
+      creditCardId: true,
       categoryId: true,
     },
   });
 
   let created = 0;
   let touched = 0;
+  const cardCache = new Map<string, { closingDay: number; dueDay: number } | null>();
 
   for (const rec of recs) {
     const interval = Math.max(rec.interval || 1, 1);
@@ -59,6 +62,21 @@ export async function materializeFixedRecurrences(
     let last: IsoDate = start;
     let madeSome = false;
 
+    // Série de compra no cartão: cada ocorrência vai pra fatura do ciclo da data.
+    let cardCycle: { closingDay: number; dueDay: number } | null = null;
+    if (rec.creditCardId) {
+      if (!cardCache.has(rec.creditCardId)) {
+        const c = await db.creditCard.findUnique({
+          where: { id: rec.creditCardId },
+          select: { closingDay: true, dueDay: true },
+        });
+        cardCache.set(rec.creditCardId, c);
+      }
+      cardCycle = cardCache.get(rec.creditCardId) ?? null;
+      if (!cardCycle) continue; // cartão apagado — nada a materializar
+    }
+    const touchedInvoices = new Set<string>();
+
     for (let i = 0; i < MAX_STEPS_PER_RECURRENCE && cursor <= horizon; i++) {
       if (end && cursor > end) break;
 
@@ -66,7 +84,34 @@ export async function materializeFixedRecurrences(
         where: { recurrenceId: rec.id, competenceDate: isoToDbDate(cursor) },
         select: { id: true },
       });
-      if (!existing) {
+      if (!existing && cardCycle && rec.creditCardId) {
+        const placement = invoicesForInstallments(cursor, 1, cardCycle)[0]!;
+        const invoice = await ensureInvoice(db, {
+          userId: rec.userId,
+          creditCardId: rec.creditCardId,
+          referenceMonth: placement.referenceMonth,
+          cycle: cardCycle,
+        });
+        await db.transaction.create({
+          data: {
+            userId: rec.userId,
+            type: 'CARD_EXPENSE',
+            amount: rec.amount,
+            description: rec.description,
+            competenceDate: isoToDbDate(cursor),
+            dueDate: invoice.dueDate,
+            paidDate: null,
+            status: 'PENDING',
+            creditCardId: rec.creditCardId,
+            invoiceId: invoice.id,
+            categoryId: rec.categoryId,
+            recurrenceId: rec.id,
+          },
+        });
+        touchedInvoices.add(invoice.id);
+        created++;
+        madeSome = true;
+      } else if (!existing) {
         await db.transaction.create({
           data: {
             userId: rec.userId,
@@ -90,6 +135,8 @@ export async function materializeFixedRecurrences(
       last = cursor;
       cursor = step(cursor);
     }
+
+    for (const invId of touchedInvoices) await recalcInvoiceTotal(db, invId);
 
     if (madeSome || last !== start) {
       await db.recurrence.update({

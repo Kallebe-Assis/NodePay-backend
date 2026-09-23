@@ -23,6 +23,13 @@ const catRow = z.object({
   total: z.number().int(),
 });
 
+const placeRow = z.object({
+  placeId: z.string().nullable(),
+  name: z.string(),
+  color: z.string().nullable(),
+  total: z.number().int(),
+});
+
 export const chartsResponseSchema = z.object({
   from: isoDateSchema,
   to: isoDateSchema,
@@ -41,6 +48,8 @@ export const chartsResponseSchema = z.object({
   ),
   expenseByCategory: z.array(catRow),
   incomeByCategory: z.array(catRow),
+  /** despesas (conta + cartão) por fornecedor/favorecido */
+  expenseByPlace: z.array(placeRow),
   balanceEvolution: z.array(z.object({ date: isoDateSchema, balance: z.number().int() })),
   topExpenses: z.array(z.object({ description: z.string(), total: z.number().int() })),
   statusSplit: z.object({

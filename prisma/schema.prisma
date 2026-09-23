@@ -336,13 +336,15 @@ model Recurrence {
   occurrences Int? // preenchido quando mode = INSTALLMENT
 
   // template do lançamento gerado
-  type        TransactionType
-  direction   String // 'expense' | 'income'
-  amount      BigInt
-  description String
-  accountId   String?
-  categoryId  String?
-  category    Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  type         TransactionType
+  direction    String // 'expense' | 'income'
+  amount       BigInt
+  description  String
+  accountId    String?
+  /// preenchido quando a série é uma compra recorrente NO CARTÃO (type CARD_EXPENSE)
+  creditCardId String?
+  categoryId   String?
+  category     Category?       @relation(fields: [categoryId], references: [id], onDelete: SetNull)
 
   /// até quando já materializamos lançamentos desta regra
   materializedUntil DateTime? @db.Date
@@ -422,7 +424,7 @@ model Transaction {
   // transferência: as 2 pernas compartilham o mesmo grupo
   transferGroupId     String?
   transferToAccountId String?
-  transferToAccount   Account? @relation("TransferToAccount", fields: [transferToAccountId], references: [id], onDelete: SetNull)
+  transferToAccount   Account?      @relation("TransferToAccount", fields: [transferToAccountId], references: [id], onDelete: SetNull)
   /// só em type=TRANSFER — ver doc do enum TransferFlow
   transferFlow        TransferFlow?
 

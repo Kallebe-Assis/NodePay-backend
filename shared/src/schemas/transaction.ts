@@ -96,6 +96,20 @@ export const accountEntryBodySchema = z.object({
 });
 export type AccountEntryBody = z.infer<typeof accountEntryBodySchema>;
 
+/**
+ * Compra recorrente no cartão: repete todo mês ou toda semana (uma parcela por
+ * ocorrência, cada uma na fatura certa). Não combina com parcelamento.
+ */
+export const cardRecurrenceInputSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('none') }),
+  z.object({
+    mode: z.literal(RecurrenceMode.FIXED),
+    frequency: z.enum([RecurrenceFrequency.MONTHLY, RecurrenceFrequency.WEEKLY]).default('MONTHLY'),
+    /** quantas ocorrências lançar agora; sem isso, ~12 meses / ~52 semanas à frente */
+    occurrences: z.number().int().min(1).max(360).optional(),
+  }),
+]);
+
 /** ---- Tela 2: compra no cartão de crédito ---- */
 export const cardEntryBodySchema = z.object({
   kind: z.literal('card'),
@@ -114,6 +128,8 @@ export const cardEntryBodySchema = z.object({
   amountIsPerInstallment: z.boolean().optional(),
   /** Igual ao de `recurrenceInputSchema` — pra registrar um parcelamento no cartão já em andamento. */
   startInstallment: z.number().int().min(1).optional(),
+  /** fixo mensal/semanal (só com `installments` = 1) */
+  recurrence: cardRecurrenceInputSchema.default({ mode: 'none' }),
   ...optionalExtras,
 });
 export type CardEntryBody = z.infer<typeof cardEntryBodySchema>;
@@ -213,6 +229,8 @@ export const listTransactionsQuerySchema = paginationQuerySchema.extend({
   tag: z.string().optional(),
   type: transactionTypeSchema.optional(),
   status: transactionStatusSchema.optional(),
+  /** vários status de uma vez, separados por vírgula (ex.: "PENDING,PARTIAL"); tem prioridade sobre `status` */
+  statuses: z.string().max(120).optional(),
   /** filtro rápido: todos / despesas / receitas / compras no cartão */
   flow: z.enum(['all', 'expense', 'income', 'card']).optional(),
   minAmount: z.coerce.number().int().nonnegative().optional(), // centavos

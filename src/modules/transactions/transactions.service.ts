@@ -246,6 +246,15 @@ export class TransactionsService {
     };
 
     const cycle = { closingDay: card.closingDay, dueDay: card.dueDay };
+
+    // ---- compra recorrente (fixa mensal/semanal) ----
+    if (body.recurrence.mode === 'FIXED') {
+      if (body.installments > 1) {
+        throw Errors.badRequest('Compra recorrente não combina com parcelamento.');
+      }
+      return this.createCardFixedSeries(userId, card, body, body.recurrence, extras);
+    }
+
     const placements = invoicesForInstallments(body.purchaseDate, body.installments, cycle);
     // `amount` pode ser o TOTAL da compra (padrão) ou o valor de CADA parcela.
     const total = body.amountIsPerInstallment ? body.amount * body.installments : body.amount;
@@ -274,10 +283,10 @@ export class TransactionsService {
               body.installments > 1
                 ? `${body.description} (${i + 1}/${body.installments})`
                 : body.description,
-            // A parcela "conta" no mês em que a fatura FECHA (não no da compra
-            // nem no do vencimento) — é a competência da fatura para listas e
-            // relatórios. `dueDate` continua sendo o vencimento real.
-            competenceDate: invoice.closingDate,
+            // Pro usuário, a compra "conta" no dia em que foi feita (parcela N
+            // = N-1 meses depois). Em qual fatura cai (e o vencimento real)
+            // vem do ciclo de fechamento do cartão — `invoiceId`/`dueDate`.
+            competenceDate: isoToDbDate(addMonths(body.purchaseDate, i)),
             dueDate: invoice.dueDate,
             paidDate: null,
             status: 'PENDING',
@@ -295,6 +304,128 @@ export class TransactionsService {
       }
       return { created: rows.length, installmentGroupId: groupId, transactions: rows.map((r) => this.present(r)) };
     });
+  }
+
+  /**
+   * Compra recorrente no cartão: 1 lançamento por ocorrência (mensal ou
+   * semanal), cada um vinculado à fatura do ciclo da data dele. O job diário
+   * (`materializeFixedRecurrences`) continua a série quando não há quantidade.
+   */
+  private async createCardFixedSeries(
+    userId: string,
+    card: { id: string; closingDay: number; dueDay: number },
+    body: CardEntryBody,
+    rec: { frequency: 'MONTHLY' | 'WEEKLY'; occurrences?: number },
+    extras: Record<string, unknown>,
+  ) {
+    const cycle = { closingDay: card.closingDay, dueDay: card.dueDay };
+    const freq = rec.frequency;
+    const count = rec.occurrences ?? (freq === 'WEEKLY' ? FIXED_HORIZON_WEEKS : FIXED_HORIZON_MONTHS) + 1;
+    const dates: IsoDate[] = [];
+    let cursor = body.purchaseDate;
+    for (let i = 0; i < count; i++) {
+      dates.push(cursor);
+      cursor = stepByFrequency(cursor, freq);
+    }
+    const lastDate = dates[dates.length - 1]!;
+
+    return this.db.$transaction(
+      async (tx) => {
+        const recurrence = await tx.recurrence.create({
+          data: {
+            userId,
+            mode: 'FIXED',
+            frequency: freq,
+            interval: 1,
+            dayOfMonth: freq === 'MONTHLY' ? Number(body.purchaseDate.slice(8, 10)) : null,
+            startDate: isoToDbDate(body.purchaseDate),
+            endDate: rec.occurrences ? isoToDbDate(lastDate) : null,
+            occurrences: rec.occurrences ?? null,
+            type: 'CARD_EXPENSE',
+            direction: 'expense',
+            amount: numToBig(body.amount),
+            description: body.description,
+            creditCardId: card.id,
+            categoryId: body.categoryId,
+            materializedUntil: isoToDbDate(lastDate),
+          },
+        });
+        const invoices = new Map<string, { id: string; dueDate: Date }>();
+        const rows = [];
+        for (const date of dates) {
+          const placement = invoicesForInstallments(date, 1, cycle)[0]!;
+          let invoice = invoices.get(placement.referenceMonth);
+          if (!invoice) {
+            invoice = await ensureInvoice(tx, {
+              userId,
+              creditCardId: card.id,
+              referenceMonth: placement.referenceMonth,
+              cycle,
+            });
+            invoices.set(placement.referenceMonth, invoice);
+          }
+          rows.push(
+            await tx.transaction.create({
+              data: {
+                userId,
+                type: 'CARD_EXPENSE',
+                amount: numToBig(body.amount),
+                description: body.description,
+                competenceDate: isoToDbDate(date),
+                dueDate: invoice.dueDate,
+                paidDate: null,
+                status: 'PENDING',
+                creditCardId: card.id,
+                invoiceId: invoice.id,
+                categoryId: body.categoryId || null,
+                recurrenceId: recurrence.id,
+                ...extras,
+              },
+            }),
+          );
+        }
+        for (const inv of invoices.values()) await recalcInvoiceTotal(tx, inv.id);
+        return { created: rows.length, recurrenceId: recurrence.id, transactions: rows.map((r) => this.present(r)) };
+      },
+      { timeout: 60_000, maxWait: 20_000 },
+    );
+  }
+
+  /**
+   * Depois de mexer nas datas de lançamentos do cartão, religa cada um à
+   * fatura certa da nova competência (e ao vencimento dela) e recalcula os
+   * totais das faturas envolvidas.
+   */
+  private async relinkCardRows(
+    rows: { id: string; creditCardId: string | null; competenceDate: Date; invoiceId: string | null }[],
+  ) {
+    const cards = new Map<string, { closingDay: number; dueDay: number; userId: string }>();
+    const touched = new Set<string>();
+    for (const r of rows) {
+      if (!r.creditCardId) continue;
+      let card = cards.get(r.creditCardId);
+      if (!card) {
+        const c = await this.db.creditCard.findUnique({ where: { id: r.creditCardId } });
+        if (!c) continue;
+        card = { closingDay: c.closingDay, dueDay: c.dueDay, userId: c.userId };
+        cards.set(r.creditCardId, card);
+      }
+      const cycle = { closingDay: card.closingDay, dueDay: card.dueDay };
+      const placement = invoicesForInstallments(dbDateToIso(r.competenceDate), 1, cycle)[0]!;
+      const invoice = await ensureInvoice(this.db, {
+        userId: card.userId,
+        creditCardId: r.creditCardId,
+        referenceMonth: placement.referenceMonth,
+        cycle,
+      });
+      await this.db.transaction.update({
+        where: { id: r.id },
+        data: { invoiceId: invoice.id, dueDate: invoice.dueDate },
+      });
+      if (r.invoiceId) touched.add(r.invoiceId);
+      touched.add(invoice.id);
+    }
+    for (const id of touched) await recalcInvoiceTotal(this.db, id);
   }
 
   /** Transferência entre contas (1 registro, 2 pontas). */
@@ -353,6 +484,13 @@ export class TransactionsService {
       };
     }
 
+    // vários status de uma vez ("PENDING,PARTIAL"); valores inválidos são ignorados
+    const VALID_STATUS = ['PENDING', 'SCHEDULED', 'PARTIAL', 'PAID', 'CANCELED'] as const;
+    const statusList = (q.statuses ?? '')
+      .split(',')
+      .map((v) => v.trim())
+      .filter((v): v is (typeof VALID_STATUS)[number] => (VALID_STATUS as readonly string[]).includes(v));
+
     // Busca por conta, descrição, local de compra, categoria ou subcategoria.
     // Combinada com `categoryFilter` via `AND` (não `...spread`) porque as duas
     // usam `OR` — espalhar os dois faria a segunda chave `OR` sobrescrever a
@@ -388,7 +526,7 @@ export class TransactionsService {
               : // livro-razão comum não mostra transferências (elas têm tela própria);
                 // o saldo das contas já é ajustado por computeBalances.
                 { type: { not: 'TRANSFER' } }),
-      ...(q.status ? { status: q.status } : {}),
+      ...(statusList.length ? { status: { in: statusList } } : q.status ? { status: q.status } : {}),
       ...(q.minAmount != null || q.maxAmount != null
         ? {
             amount: {
@@ -643,6 +781,11 @@ export class TransactionsService {
       }
       // avulsa + "só esta parcela": segue pro update normal (1 linha) abaixo.
     }
+    // Compra de cartão sem parcelamento (ex.: série fixa) mudando de data:
+    // religa à fatura certa da nova data.
+    if (body.date && current.type === 'CARD_EXPENSE' && dbDateToIso(current.competenceDate) !== body.date) {
+      return this.moveSingleCardInstallment(current, body);
+    }
 
     const row = await this.db.transaction.update({
       where: { id },
@@ -714,7 +857,7 @@ export class TransactionsService {
     const row = await this.db.transaction.update({
       where: { id: current.id },
       data: {
-        competenceDate: invoice.closingDate,
+        competenceDate: isoToDbDate(body.date!),
         dueDate: invoice.dueDate,
         invoiceId: invoice.id,
         ...this.otherFieldsFrom(body),
@@ -770,7 +913,7 @@ export class TransactionsService {
           await tx.transaction.update({
             where: { id: it.id },
             data: {
-              competenceDate: invoice.closingDate, // competência = fechamento da fatura
+              competenceDate: isoToDbDate(addMonths(anchor, i)), // competência = data da compra (parcela i)
               dueDate: invoice.dueDate,
               invoiceId: invoice.id,
               // as outras informações editadas (descrição, valor, categoria…)
@@ -888,6 +1031,9 @@ export class TransactionsService {
       }
       return out;
     });
+
+    // série de cartão: cada ocorrência volta pra fatura certa da nova data
+    await this.relinkCardRows(rows.filter((r) => r.type === 'CARD_EXPENSE'));
 
     // realinha a recorrência com as datas reais que restaram (min/max)
     const agg = await this.db.transaction.aggregate({
