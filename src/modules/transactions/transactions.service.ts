@@ -700,6 +700,89 @@ export class TransactionsService {
   // UPDATE / STATUS / DELETE
   // ---------------------------------------------------------------------------
   async update(scope: { userId?: string }, id: string, body: UpdateTransactionBody) {
+    const result = await this.updateCore(scope, id, body);
+    if (body.seriesOccurrences !== undefined) {
+      const cur = await this.db.transaction.findFirst({
+        where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
+        select: { recurrenceId: true },
+      });
+      if (cur?.recurrenceId) await this.applySeriesLimit(cur.recurrenceId, body.seriesOccurrences);
+    }
+    return result;
+  }
+
+  /**
+   * Define quantas ocorrências a série FIXA tem no total: apaga as a mais
+   * (menos as já pagas), lança as que faltam, ou (null) tira o limite.
+   */
+  private async applySeriesLimit(recurrenceId: string, limit: number | null) {
+    const rec = await this.db.recurrence.findUnique({ where: { id: recurrenceId } });
+    if (!rec || rec.mode !== 'FIXED') return;
+    if (limit === null) {
+      await this.db.recurrence.update({
+        where: { id: rec.id },
+        data: { occurrences: null, endDate: null },
+      });
+      return;
+    }
+    const items = await this.db.transaction.findMany({
+      where: { recurrenceId: rec.id },
+      orderBy: { competenceDate: 'asc' },
+    });
+    const freq = rec.frequency as RecurrenceFrequency;
+    let lastDate: IsoDate;
+
+    if (items.length > limit) {
+      const extra = items.slice(limit).filter((t) => t.status !== 'PAID');
+      const invoiceIds = [...new Set(extra.map((t) => t.invoiceId).filter(Boolean))] as string[];
+      await this.db.transaction.deleteMany({ where: { id: { in: extra.map((t) => t.id) } } });
+      for (const inv of invoiceIds) await recalcInvoiceTotal(this.db, inv);
+      const kept = items.slice(0, limit);
+      const paidBeyond = items.slice(limit).filter((t) => t.status === 'PAID');
+      lastDate = dbDateToIso((paidBeyond.at(-1) ?? kept[kept.length - 1]!).competenceDate);
+    } else {
+      const last = items[items.length - 1];
+      lastDate = last ? dbDateToIso(last.competenceDate) : dbDateToIso(rec.startDate);
+      const created = [];
+      for (let i = items.length; i < limit; i++) {
+        lastDate = stepByFrequency(lastDate, freq);
+        created.push(
+          await this.db.transaction.create({
+            data: {
+              userId: rec.userId,
+              type: rec.type,
+              amount: rec.amount,
+              description: rec.description,
+              competenceDate: isoToDbDate(lastDate),
+              dueDate: isoToDbDate(lastDate),
+              paidDate: null,
+              status: 'PENDING',
+              accountId: rec.accountId,
+              creditCardId: rec.creditCardId,
+              categoryId: rec.categoryId,
+              recurrenceId: rec.id,
+              placeId: last?.placeId ?? null,
+              tags: last?.tags ?? [],
+              notes: last?.notes ?? null,
+              includeInTotals: last?.includeInTotals ?? true,
+            },
+          }),
+        );
+      }
+      if (rec.creditCardId) await this.relinkCardRows(created);
+    }
+
+    await this.db.recurrence.update({
+      where: { id: rec.id },
+      data: {
+        occurrences: limit,
+        endDate: isoToDbDate(lastDate),
+        materializedUntil: isoToDbDate(lastDate),
+      },
+    });
+  }
+
+  private async updateCore(scope: { userId?: string }, id: string, body: UpdateTransactionBody) {
     const current = await this.db.transaction.findFirst({
       where: { id, ...(scope.userId ? { userId: scope.userId } : {}) },
     });

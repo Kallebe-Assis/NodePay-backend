@@ -201,6 +201,12 @@ export const updateTransactionBodySchema = z.object({
    *    certa; as demais continuam onde estavam).
    */
   applyToInstallments: z.boolean().optional(),
+  /**
+   * Só em série FIXA: total de ocorrências da série. Menor que o atual apaga as
+   * ocorrências a mais (as já pagas ficam); maior lança as que faltam; `null`
+   * tira o limite (a série volta a continuar sozinha).
+   */
+  seriesOccurrences: z.number().int().min(1).max(360).nullable().optional(),
 });
 export type UpdateTransactionBody = z.infer<typeof updateTransactionBodySchema>;
 

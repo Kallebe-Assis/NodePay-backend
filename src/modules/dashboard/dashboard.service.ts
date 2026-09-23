@@ -76,7 +76,7 @@ export class DashboardService {
         }),
         this.db.invoice.findMany({
           where: { userId, status: { in: ['OPEN', 'CLOSED'] } },
-          select: { total: true, dueDate: true, status: true },
+          select: { creditCardId: true, total: true, dueDate: true, status: true },
           orderBy: { dueDate: 'asc' },
         }),
         this.db.transaction.groupBy({
@@ -241,7 +241,20 @@ export class DashboardService {
     // ---- cartões ----
     const limitTotal = cards.reduce((s, c) => s + nb(c.creditLimit), 0);
     const openInvoicesTotal = openInvoices.reduce((s, i) => s + nb(i.total), 0);
-    const nextUnpaid = openInvoices.find((i) => dbDateToIso(i.dueDate) >= today) ?? openInvoices[0];
+    // "Próxima fatura" = soma da próxima fatura de CADA cartão (a 1ª que ainda
+    // vence hoje ou depois; se todas já venceram, a mais antiga em aberto).
+    // A data mostrada é a mais próxima entre elas.
+    const nextByCard = new Map<string, (typeof openInvoices)[number]>();
+    for (const i of openInvoices) {
+      const cur = nextByCard.get(i.creditCardId);
+      const iUpcoming = dbDateToIso(i.dueDate) >= today;
+      const curUpcoming = cur ? dbDateToIso(cur.dueDate) >= today : false;
+      if (!cur || (iUpcoming && !curUpcoming)) nextByCard.set(i.creditCardId, i);
+      // openInvoices já vem ordenado por vencimento: o 1º "upcoming" de cada cartão vence primeiro
+    }
+    const nextInvoices = [...nextByCard.values()];
+    const nextDueAmountTotal = nextInvoices.reduce((s, i) => s + nb(i.total), 0);
+    const nextDueDateMin = nextInvoices.map((i) => dbDateToIso(i.dueDate)).sort()[0] ?? null;
 
     // ---- saúde financeira ----
     const commitmentRatio = totalIncome > 0 ? committed / totalIncome : 0;
@@ -281,8 +294,8 @@ export class DashboardService {
         openInvoicesTotal,
         available: Math.max(limitTotal - openInvoicesTotal, 0),
         usageRatio: limitTotal > 0 ? openInvoicesTotal / limitTotal : 0,
-        nextDueDate: nextUnpaid ? dbDateToIso(nextUnpaid.dueDate) : null,
-        nextDueAmount: nextUnpaid ? nb(nextUnpaid.total) : 0,
+        nextDueDate: nextDueDateMin,
+        nextDueAmount: nextDueAmountTotal,
       },
       cashflow,
     };
